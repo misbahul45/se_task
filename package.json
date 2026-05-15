@@ -1,15 +1,16 @@
 {
   "name": "wa-agent",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "type": "module",
   "scripts": {
     "dev": "node main.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "packageManager": "pnpm@10.17.1",
   "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@langchain/core": "^1.1.46",
+    "@langchain/groq": "^1.2.0",
+    "baileys": "7.0.0-rc11",
+    "pino": "^9.0.0",
+    "qrcode": "^1.5.4"
   }
 }
