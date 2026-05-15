@@ -1,6 +1,7 @@
 allowBuilds:
-  baileys: set this to true or false
-  protobufjs: set this to true or false
-  sharp: set this to true or false
+  baileys: true
+  faiss-node: true
+  protobufjs: true
+  sharp: true
 ignoredBuiltDependencies:
   - puppeteer
