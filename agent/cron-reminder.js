@@ -57,9 +57,7 @@ async function loadReminderState() {
 async function saveReminderState(state) {
   try {
     const dir = dirname(REMINDER_STATE_FILE)
-    if (!existsSync(dir)) {
-      await mkdir(dir, { recursive: true })
-    }
+    if (!existsSync(dir)) await mkdir(dir, { recursive: true })
     await writeFile(REMINDER_STATE_FILE, JSON.stringify(state, null, 2))
     log('SUCCESS', 'State', `Reminder state saved — ${Object.keys(state.sent).length} total entries`)
   } catch (error) {
@@ -87,7 +85,6 @@ async function fetchReservations() {
   }
 }
 
-// Update reminder_status di Sheets langsung via API
 async function markReminderSentOnSheet(id) {
   try {
     const response = await fetch(API_URL, {
@@ -98,7 +95,7 @@ async function markReminderSentOnSheet(id) {
     })
     const data = await response.json()
     if (data.success) {
-      log('SUCCESS', 'Sheet', `reminder_status updated di Sheets — ID: ${id}, sentAt: ${data.sentAt}`)
+      log('SUCCESS', 'Sheet', `reminder_status updated — ID: ${id}, sentAt: ${data.sentAt}`)
     } else {
       log('WARN', 'Sheet', `Gagal update Sheets untuk ID: ${id} — ${data.error}`)
     }
@@ -107,22 +104,32 @@ async function markReminderSentOnSheet(id) {
   }
 }
 
+// ─────────────────────────────────────────────
+// ✅ DATE/TIME PARSER & FORMATTER (SOP-COMPLIANT)
+// ─────────────────────────────────────────────
 function parseReservationDateTime(tanggal, jam) {
   try {
     let year, month, day, hours = 0, minutes = 0
 
+    // Parse tanggal dari berbagai format (Google Sheets serial, ISO, string)
     if (typeof tanggal === 'number') {
+      // Excel/Sheets serial date
       const d = new Date((tanggal - 25569) * 86400000)
       year = d.getUTCFullYear(); month = d.getUTCMonth() + 1; day = d.getUTCDate()
     } else if (typeof tanggal === 'string' && tanggal.includes('T')) {
+      // ISO format
       const d = new Date(tanggal)
       year = d.getUTCFullYear(); month = d.getUTCMonth() + 1; day = d.getUTCDate()
     } else {
-      const parts = String(tanggal).split('-').map(Number)
-      year = parts[0]; month = parts[1]; day = parts[2]
+      // String format: "YYYY-MM-DD" atau "DD-MM-YYYY"
+      const parts = String(tanggal).split(/[-/]/).map(Number)
+      if (parts[0] > 31) { year = parts[0]; month = parts[1]; day = parts[2] }
+      else { day = parts[0]; month = parts[1]; year = parts[2] || new Date().getFullYear() }
     }
 
+    // Parse jam dari berbagai format
     if (typeof jam === 'number') {
+      // Excel decimal time (0.5 = 12:00)
       const totalMinutes = Math.round(jam * 24 * 60)
       hours = Math.floor(totalMinutes / 60) % 24
       minutes = totalMinutes % 60
@@ -130,11 +137,21 @@ function parseReservationDateTime(tanggal, jam) {
       const t = new Date(jam)
       hours = t.getUTCHours(); minutes = t.getUTCMinutes()
     } else {
-      const timeMatch = String(jam).match(/(\d{1,2}):(\d{2})/)
-      hours = timeMatch ? parseInt(timeMatch[1]) : 0
-      minutes = timeMatch ? parseInt(timeMatch[2]) : 0
+      // String: "14:00", "14.00", "2 PM"
+      const timeMatch = String(jam).match(/(\d{1,2})[:.](\d{2})/)
+      if (timeMatch) {
+        hours = parseInt(timeMatch[1]); minutes = parseInt(timeMatch[2])
+      } else {
+        const pmMatch = String(jam).match(/(\d{1,2})\s*(pm|pagi|siang|sore|malam)/i)
+        if (pmMatch) {
+          hours = parseInt(pmMatch[1])
+          if (/pm|sore|malam/i.test(pmMatch[2]) && hours < 12) hours += 12
+          if (/pagi/i.test(pmMatch[2]) && hours === 12) hours = 0
+        }
+      }
     }
 
+    // Convert ke UTC untuk konsistensi, lalu akan diformat ke WIB saat display
     const utcMs = Date.UTC(year, month - 1, day, hours - TIMEZONE_OFFSET_HOURS, minutes, 0)
     return new Date(utcMs)
   } catch (err) {
@@ -143,23 +160,39 @@ function parseReservationDateTime(tanggal, jam) {
   }
 }
 
-function formatTime(date) {
+// ✅ Format: "Sabtu, 25 Mei 2024, 14.00 WIB"
+function formatDateTime(date) {
   return date.toLocaleString('id-ID', {
     timeZone: 'Asia/Jakarta',
-    weekday: 'long', year: 'numeric', month: 'long',
-    day: 'numeric', hour: '2-digit', minute: '2-digit'
-  })
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).replace(',', '') + ' WIB'
+}
+
+// ✅ Format singkat untuk reminder: "25 Mei 2024, 14.00 WIB"
+function formatDateTimeShort(date) {
+  const days = ['Minggu','Senin','Selasa','Rabu','Kamis','Jumat','Sabtu']
+  const months = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember']
+  
+  const d = new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Jakarta' }))
+  return `${days[d.getDay()]}, ${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}, ${String(d.getHours()).padStart(2,'0')}.${String(d.getMinutes()).padStart(2,'0')} WIB`
 }
 
 function formatCurrency(amount) {
   const num = typeof amount === 'string'
     ? parseInt(amount.replace(/\./g, '').replace(',', '.'))
     : Number(amount)
-  return new Intl.NumberFormat('id-ID', {
-    style: 'currency', currency: 'IDR', minimumFractionDigits: 0
-  }).format(num || 0)
+  return `Rp ${new Intl.NumberFormat('id-ID', { minimumFractionDigits: 0 }).format(num || 0)}`
 }
 
+// ─────────────────────────────────────────────
+// SEND REMINDER (Group + Customer)
+// ─────────────────────────────────────────────
 async function sendReminderToGroup(reservation, eventDateTime) {
   if (!sock) {
     log('ERROR', 'Reminder', 'WhatsApp socket not initialized')
@@ -171,42 +204,43 @@ async function sendReminderToGroup(reservation, eventDateTime) {
   const hoursLeft = Math.floor(minutesUntil / 60)
   const minsLeft = minutesUntil % 60
 
-  const message = `⏰ *Reminder Reservasi - Loka Coffee*
+  const message = `⏰ *Reminder Reservasi - Loka Coffee & Eatery*
 
 📋 *Detail Acara:*
 • ID: ${reservation.id}
 • Nama: ${reservation.nama}
-• 📅 Tanggal: ${formatTime(eventDateTime)}
+• 📅 Tanggal: ${formatDateTimeShort(eventDateTime)}
 • ⏰ Dalam: ${hoursLeft} jam ${minsLeft} menit lagi
 • 👥 Tamu: ${reservation.jumlah_orang} orang
-• 🏠 Area: ${reservation.area || '-'}
+• 🏠 Area: ${reservation.area || reservation.kategori || '-'}
 • 📝 Catatan: ${reservation.catatan || '-'}
 
-💰 *Status Pembayaran:*
-• Total: ${formatCurrency(reservation.subtotal)}
-• Deposit: ${formatCurrency(reservation.deposit)}
-• Sisa: ${formatCurrency(reservation.sisa_pembayaran)}
+💰 *Status Pembayaran (SOP):*
+• Total Minimum: ${formatCurrency(reservation.subtotal || reservation.total)}
+• Deposit (50%): ${formatCurrency(reservation.deposit)}
+• Sisa (50%): ${formatCurrency(reservation.sisa_pembayaran)}
 • Status: ${reservation.status || 'PENDING'}
 
 ⚠️ *Penting:*
-• Pastikan deposit sudah dibayar
-• Konfirmasi kehadiran H-1
-• Hubungi admin jika ada perubahan
+• Pastikan deposit sudah dibayar H-1
+• Sisa pembayaran dilunasi sebelum acara dimulai
+• Durasi penggunaan ruang: 3 jam
+• Hubungi admin jika ada perubahan/reschedule
 
 Terima kasih! ☕✨`
 
   try {
+    // Send to Group
     await sock.sendMessage(GROUP_JID, { text: message })
-    log('SUCCESS', 'Reminder', `Reminder sent — ${reservation.nama} (ID: ${reservation.id})`)
+    log('SUCCESS', 'Reminder', `Reminder sent to group — ${reservation.nama} (ID: ${reservation.id})`)
 
-    // ➕ ADD THIS ONLY
+    // Send to Customer (if whatsapp number available)
     if (reservation.whatsapp) {
       const customerJid = reservation.whatsapp.includes('@s.whatsapp.net')
         ? reservation.whatsapp
-        : `${reservation.whatsapp}@s.whatsapp.net`
+        : `${reservation.whatsapp.replace(/^0/, '62')}@s.whatsapp.net`
 
       await sock.sendMessage(customerJid, { text: message })
-
       log('SUCCESS', 'Reminder', `Reminder sent to customer — ${reservation.nama}`)
     }
     return true
@@ -216,6 +250,9 @@ Terima kasih! ☕✨`
   }
 }
 
+// ─────────────────────────────────────────────
+// MAIN CRON RUNNER
+// ─────────────────────────────────────────────
 export async function runReservationReminders() {
   logDivider()
   log('CRON', 'Run', `Reminder check started — ${new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}`)
@@ -230,60 +267,41 @@ export async function runReservationReminders() {
 
   const now = Date.now()
   const thresholdMs = REMINDER_HOURS_BEFORE * 60 * 60 * 1000
-
-  let checked = 0
-  let sent = 0
+  let checked = 0, sent = 0
 
   for (const r of reservations) {
     checked++
-
     const id = r.id
     const status = String(r.status || '').toUpperCase()
 
-    // 1. skip cancelled
+    // Skip cancelled or already reminded
     if (status === 'CANCELLED') continue
-
-    // 2. skip already sent (sheet OR local)
     if (String(r.reminder_status || '').toUpperCase().startsWith('SENT')) continue
     if (state.sent[id]) continue
 
-    // 3. parse datetime
     const eventDateTime = parseReservationDateTime(r.tanggal, r.jam)
     if (!eventDateTime) continue
 
     const eventMs = eventDateTime.getTime()
-
-    // 4. hanya future event
     if (eventMs <= now) {
       log('INFO', 'SKIP', `Expired event: ${r.nama}`)
       continue
     }
 
     const diff = eventMs - now
-
-    // 5. hanya kirim kalau masuk window H-5 jam
-    if (diff > thresholdMs) {
-      continue
-    }
+    if (diff > thresholdMs) continue // Only send if within 5-hour window
 
     log('SEND', 'Reminder', `Sending reminder → ${r.nama} (${id})`)
-
     const success = await sendReminderToGroup(r, eventDateTime)
 
     if (success) {
       sent++
-
-      state.sent[id] = {
-        sentAt: new Date().toISOString(),
-        event: eventDateTime.toISOString()
-      }
-
+      state.sent[id] = { sentAt: new Date().toISOString(), event: eventDateTime.toISOString() }
       await markReminderSentOnSheet(id)
     }
   }
 
   await saveReminderState(state)
-
   log('SUCCESS', 'Run', `Done. Checked=${checked}, Sent=${sent}`)
   logDivider()
 }
@@ -297,7 +315,6 @@ export function startReminderCron(intervalMinutes = DEFAULT_INTERVAL_MINUTES) {
   logDivider('═')
 
   runReservationReminders()
-
   const intervalId = setInterval(() => {
     log('CRON', 'Tick', 'Interval triggered — running reminder check...')
     runReservationReminders()
@@ -309,6 +326,7 @@ export function startReminderCron(intervalMinutes = DEFAULT_INTERVAL_MINUTES) {
   }
 }
 
+// Standalone mode
 if (import.meta.url === `file://${process.argv[1]}`) {
   logDivider('═')
   log('CRON', 'Standalone', '🚀 Running in standalone mode')
@@ -316,9 +334,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   log('CRON', 'Standalone', `Kirim jika : event < ${REMINDER_HOURS_BEFORE} jam lagi`)
   log('CRON', 'Standalone', `Interval   : ${DEFAULT_INTERVAL_MINUTES} menit`)
   logDivider('═')
-
   const stopCron = startReminderCron(DEFAULT_INTERVAL_MINUTES)
-
   process.on('SIGINT', () => { stopCron(); process.exit(0) })
   process.on('SIGTERM', () => { stopCron(); process.exit(0) })
 }
