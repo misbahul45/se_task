@@ -198,6 +198,17 @@ Terima kasih! ☕✨`
   try {
     await sock.sendMessage(GROUP_JID, { text: message })
     log('SUCCESS', 'Reminder', `Reminder sent — ${reservation.nama} (ID: ${reservation.id})`)
+
+    // ➕ ADD THIS ONLY
+    if (reservation.whatsapp) {
+      const customerJid = reservation.whatsapp.includes('@s.whatsapp.net')
+        ? reservation.whatsapp
+        : `${reservation.whatsapp}@s.whatsapp.net`
+
+      await sock.sendMessage(customerJid, { text: message })
+
+      log('SUCCESS', 'Reminder', `Reminder sent to customer — ${reservation.nama}`)
+    }
     return true
   } catch (error) {
     log('ERROR', 'Reminder', `Failed to send — ID ${reservation.id}: ${error.message}`)
