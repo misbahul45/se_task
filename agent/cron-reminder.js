@@ -1,25 +1,27 @@
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { existsSync } from 'fs'
-import { join, dirname } from 'path'
+import { dirname } from 'path'
 
-// ─────────────────────────────────────────────
-// CONFIG
-// ─────────────────────────────────────────────
-const API_URL = 'https://script.google.com/macros/s/AKfycbxcmAqb5ASUipihtlxfFbIeZ0Y2ITQ3cuG_q6s86zaxnFsXWTyYtss1NAC9hp8473GUeQ/exec'
+const API_URL = 'https://script.google.com/macros/s/AKfycbz0qMDYXJZrOp3xbDk4cNYoODRqs05-32_hd89FXECm6fQAuVyaJSTIYNk7zc3ZYXaN7Q/exec'
 const REMINDER_STATE_FILE = './memory-store/reminder-state.json'
 const GROUP_JID = '120363406492419821@g.us'
 const REMINDER_HOURS_BEFORE = 5
-const DEFAULT_INTERVAL_MINUTES = 600 // ✅ 10 jam
+const DEFAULT_INTERVAL_MINUTES = 30
+const TIMEZONE_OFFSET_HOURS = 7
 
 let sock = null
 
-// ─────────────────────────────────────────────
-// LOGGER (konsisten dengan index.js)
-// ─────────────────────────────────────────────
-const LOG_LEVELS = { INFO: '📘 INFO', WARN: '⚠️  WARN', ERROR: '❌ ERROR', SUCCESS: '✅ OK  ', CRON: '⏰ CRON ' }
+const LOG_LEVELS = {
+  INFO: '📘 INFO',
+  WARN: '⚠️  WARN',
+  ERROR: '❌ ERROR',
+  SUCCESS: '✅ OK  ',
+  CRON: '⏰ CRON ',
+  SEND: '📤 SEND '
+}
 
 function log(level, context, message, data = null) {
-  const ts = new Date().toLocaleTimeString('id-ID', { hour12: false })
+  const ts = new Date().toLocaleTimeString('id-ID', { hour12: false, timeZone: 'Asia/Jakarta' })
   const prefix = LOG_LEVELS[level] ?? '     '
   const ctx = context ? `[${context}]` : ''
   console.log(`${ts} ${prefix} ${ctx} ${message}`)
@@ -32,17 +34,11 @@ function logDivider(char = '─', len = 60) {
   console.log(char.repeat(len))
 }
 
-// ─────────────────────────────────────────────
-// SET SOCKET
-// ─────────────────────────────────────────────
 export function setWhatsAppSocket(socket) {
   sock = socket
   log('SUCCESS', 'Cron', 'WhatsApp socket registered')
 }
 
-// ─────────────────────────────────────────────
-// STATE: load & save reminder yang sudah terkirim
-// ─────────────────────────────────────────────
 async function loadReminderState() {
   try {
     if (existsSync(REMINDER_STATE_FILE)) {
@@ -63,7 +59,6 @@ async function saveReminderState(state) {
     const dir = dirname(REMINDER_STATE_FILE)
     if (!existsSync(dir)) {
       await mkdir(dir, { recursive: true })
-      log('INFO', 'State', `Created directory: ${dir}`)
     }
     await writeFile(REMINDER_STATE_FILE, JSON.stringify(state, null, 2))
     log('SUCCESS', 'State', `Reminder state saved — ${Object.keys(state.sent).length} total entries`)
@@ -72,11 +67,8 @@ async function saveReminderState(state) {
   }
 }
 
-// ─────────────────────────────────────────────
-// FETCH RESERVASI
-// ─────────────────────────────────────────────
 async function fetchReservations() {
-  log('CRON', 'Fetch', `Fetching reservations from API...`)
+  log('CRON', 'Fetch', 'Fetching reservations from API...')
   try {
     const response = await fetch(`${API_URL}?action=list`, {
       headers: { 'Content-Type': 'application/json' },
@@ -87,70 +79,97 @@ async function fetchReservations() {
       log('SUCCESS', 'Fetch', `Fetched ${data.data.length} reservations`)
       return data.data
     }
-    log('WARN', 'Fetch', `API returned success=false or no data: ${data.message || data.error || '-'}`)
+    log('WARN', 'Fetch', `API returned no data: ${data.message || data.error || '-'}`)
     return []
   } catch (error) {
-    log('ERROR', 'Fetch', `Failed to fetch reservations: ${error.message}`)
+    log('ERROR', 'Fetch', `Failed to fetch: ${error.message}`)
     return []
   }
 }
 
-// ─────────────────────────────────────────────
-// UTIL
-// ─────────────────────────────────────────────
+// Update reminder_status di Sheets langsung via API
+async function markReminderSentOnSheet(id) {
+  try {
+    const response = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      redirect: 'follow',
+      body: JSON.stringify({ action: 'mark_reminder_sent', id })
+    })
+    const data = await response.json()
+    if (data.success) {
+      log('SUCCESS', 'Sheet', `reminder_status updated di Sheets — ID: ${id}, sentAt: ${data.sentAt}`)
+    } else {
+      log('WARN', 'Sheet', `Gagal update Sheets untuk ID: ${id} — ${data.error}`)
+    }
+  } catch (error) {
+    log('ERROR', 'Sheet', `Gagal hit API mark_reminder_sent: ${error.message}`)
+  }
+}
+
 function parseReservationDateTime(tanggal, jam) {
   try {
-    const [year, month, day] = tanggal.split('-').map(Number)
-    const timeMatch = jam?.match(/(\d{2}):(\d{2})/)
-    const hours = timeMatch ? parseInt(timeMatch[1]) : 0
-    const minutes = timeMatch ? parseInt(timeMatch[2]) : 0
-    return new Date(year, month - 1, day, hours, minutes, 0)
-  } catch {
+    let year, month, day, hours = 0, minutes = 0
+
+    if (typeof tanggal === 'number') {
+      const d = new Date((tanggal - 25569) * 86400000)
+      year = d.getUTCFullYear(); month = d.getUTCMonth() + 1; day = d.getUTCDate()
+    } else if (typeof tanggal === 'string' && tanggal.includes('T')) {
+      const d = new Date(tanggal)
+      year = d.getUTCFullYear(); month = d.getUTCMonth() + 1; day = d.getUTCDate()
+    } else {
+      const parts = String(tanggal).split('-').map(Number)
+      year = parts[0]; month = parts[1]; day = parts[2]
+    }
+
+    if (typeof jam === 'number') {
+      const totalMinutes = Math.round(jam * 24 * 60)
+      hours = Math.floor(totalMinutes / 60) % 24
+      minutes = totalMinutes % 60
+    } else if (typeof jam === 'string' && jam.includes('T')) {
+      const t = new Date(jam)
+      hours = t.getUTCHours(); minutes = t.getUTCMinutes()
+    } else {
+      const timeMatch = String(jam).match(/(\d{1,2}):(\d{2})/)
+      hours = timeMatch ? parseInt(timeMatch[1]) : 0
+      minutes = timeMatch ? parseInt(timeMatch[2]) : 0
+    }
+
+    const utcMs = Date.UTC(year, month - 1, day, hours - TIMEZONE_OFFSET_HOURS, minutes, 0)
+    return new Date(utcMs)
+  } catch (err) {
+    log('ERROR', 'Parse', `Failed to parse datetime: ${err.message}`)
     return null
   }
 }
 
-function isWithinReminderWindow(eventDateTime, hoursBefore = REMINDER_HOURS_BEFORE) {
-  const now = new Date()
-  const reminderTime = new Date(eventDateTime.getTime() - hoursBefore * 60 * 60 * 1000)
-  const windowEnd = new Date(reminderTime.getTime() + 2 * 60 * 60 * 1000) // window 2 jam
-  const inWindow = now >= reminderTime && now <= windowEnd
-  return inWindow
-}
-
 function formatTime(date) {
   return date.toLocaleString('id-ID', {
+    timeZone: 'Asia/Jakarta',
     weekday: 'long', year: 'numeric', month: 'long',
     day: 'numeric', hour: '2-digit', minute: '2-digit'
   })
 }
 
 function formatCurrency(amount) {
+  const num = typeof amount === 'string'
+    ? parseInt(amount.replace(/\./g, '').replace(',', '.'))
+    : Number(amount)
   return new Intl.NumberFormat('id-ID', {
     style: 'currency', currency: 'IDR', minimumFractionDigits: 0
-  }).format(amount)
+  }).format(num || 0)
 }
 
-// ─────────────────────────────────────────────
-// KIRIM REMINDER KE GRUP
-// ─────────────────────────────────────────────
-async function sendReminderToGroup(reservation) {
+async function sendReminderToGroup(reservation, eventDateTime) {
   if (!sock) {
-    log('ERROR', 'Reminder', 'WhatsApp socket not initialized — cannot send reminder')
+    log('ERROR', 'Reminder', 'WhatsApp socket not initialized')
     return false
   }
 
-  const eventDateTime = parseReservationDateTime(reservation.tanggal, reservation.jam)
-  if (!eventDateTime) {
-    log('ERROR', 'Reminder', `Invalid date/time for reservation ID: ${reservation.id}`)
-    return false
-  }
-
-  const minutesUntil = Math.round((eventDateTime - new Date()) / (1000 * 60))
-  const hours = Math.floor(minutesUntil / 60)
-  const minutes = minutesUntil % 60
-
-  log('CRON', 'Reminder', `Preparing reminder for ${reservation.nama} (ID: ${reservation.id}) — in ${hours}h ${minutes}m`)
+  const now = new Date()
+  const minutesUntil = Math.round((eventDateTime - now) / (1000 * 60))
+  const hoursLeft = Math.floor(minutesUntil / 60)
+  const minsLeft = minutesUntil % 60
 
   const message = `⏰ *Reminder Reservasi - Loka Coffee*
 
@@ -158,13 +177,13 @@ async function sendReminderToGroup(reservation) {
 • ID: ${reservation.id}
 • Nama: ${reservation.nama}
 • 📅 Tanggal: ${formatTime(eventDateTime)}
-• ⏰ Dalam: ${hours} jam ${minutes} menit lagi
+• ⏰ Dalam: ${hoursLeft} jam ${minsLeft} menit lagi
 • 👥 Tamu: ${reservation.jumlah_orang} orang
-• 🏠 Area: ${reservation.area || reservation.kategori || '-'}
+• 🏠 Area: ${reservation.area || '-'}
 • 📝 Catatan: ${reservation.catatan || '-'}
 
 💰 *Status Pembayaran:*
-• Total: ${formatCurrency(reservation.total)}
+• Total: ${formatCurrency(reservation.subtotal)}
 • Deposit: ${formatCurrency(reservation.deposit)}
 • Sisa: ${formatCurrency(reservation.sisa_pembayaran)}
 • Status: ${reservation.status || 'PENDING'}
@@ -178,114 +197,98 @@ Terima kasih! ☕✨`
 
   try {
     await sock.sendMessage(GROUP_JID, { text: message })
-    log('SUCCESS', 'Reminder', `Reminder sent for ID: ${reservation.id} → ${GROUP_JID}`)
+    log('SUCCESS', 'Reminder', `Reminder sent — ${reservation.nama} (ID: ${reservation.id})`)
     return true
   } catch (error) {
-    log('ERROR', 'Reminder', `Failed to send reminder for ID ${reservation.id}: ${error.message}`)
+    log('ERROR', 'Reminder', `Failed to send — ID ${reservation.id}: ${error.message}`)
     return false
   }
 }
 
-// ─────────────────────────────────────────────
-// MAIN: jalankan pengecekan reminder
-// ─────────────────────────────────────────────
 export async function runReservationReminders() {
   logDivider()
-  log('CRON', 'Run', `Reminder check started at ${new Date().toLocaleString('id-ID')}`)
+  log('CRON', 'Run', `Reminder check started — ${new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}`)
 
   const state = await loadReminderState()
   const reservations = await fetchReservations()
 
-  if (reservations.length === 0) {
-    log('INFO', 'Run', 'No reservations found — skipping')
-    logDivider()
+  if (!reservations.length) {
+    log('INFO', 'Run', 'No reservations found')
     return
   }
 
-  const now = new Date()
-  let checked = 0, skippedPast = 0, skippedCancelled = 0, skippedAlreadySent = 0, skippedOutOfWindow = 0, remindersSent = 0
+  const now = Date.now()
+  const thresholdMs = REMINDER_HOURS_BEFORE * 60 * 60 * 1000
 
-  for (const reservation of reservations) {
+  let checked = 0
+  let sent = 0
+
+  for (const r of reservations) {
     checked++
 
-    if (reservation.status === 'CANCELLED') {
-      skippedCancelled++
-      log('INFO', 'Check', `[SKIP-CANCELLED] ${reservation.nama} (ID: ${reservation.id})`)
+    const id = r.id
+    const status = String(r.status || '').toUpperCase()
+
+    // 1. skip cancelled
+    if (status === 'CANCELLED') continue
+
+    // 2. skip already sent (sheet OR local)
+    if (String(r.reminder_status || '').toUpperCase().startsWith('SENT')) continue
+    if (state.sent[id]) continue
+
+    // 3. parse datetime
+    const eventDateTime = parseReservationDateTime(r.tanggal, r.jam)
+    if (!eventDateTime) continue
+
+    const eventMs = eventDateTime.getTime()
+
+    // 4. hanya future event
+    if (eventMs <= now) {
+      log('INFO', 'SKIP', `Expired event: ${r.nama}`)
       continue
     }
 
-    const eventDateTime = parseReservationDateTime(reservation.tanggal, reservation.jam)
-    if (!eventDateTime) {
-      log('WARN', 'Check', `[SKIP-INVALID-DATE] ${reservation.nama} (ID: ${reservation.id}) — tanggal: ${reservation.tanggal}, jam: ${reservation.jam}`)
+    const diff = eventMs - now
+
+    // 5. hanya kirim kalau masuk window H-5 jam
+    if (diff > thresholdMs) {
       continue
     }
 
-    if (eventDateTime < now) {
-      skippedPast++
-      log('INFO', 'Check', `[SKIP-PAST] ${reservation.nama} (ID: ${reservation.id}) — event sudah lewat: ${formatTime(eventDateTime)}`)
-      continue
-    }
+    log('SEND', 'Reminder', `Sending reminder → ${r.nama} (${id})`)
 
-    const reminderKey = `${reservation.id}_${REMINDER_HOURS_BEFORE}h`
-    if (state.sent[reminderKey]) {
-      skippedAlreadySent++
-      log('INFO', 'Check', `[SKIP-SENT] ${reservation.nama} (ID: ${reservation.id}) — reminder sudah terkirim pada ${state.sent[reminderKey].sentAt}`)
-      continue
-    }
+    const success = await sendReminderToGroup(r, eventDateTime)
 
-    if (!isWithinReminderWindow(eventDateTime, REMINDER_HOURS_BEFORE)) {
-      const minutesUntilReminder = Math.round(
-        (eventDateTime.getTime() - REMINDER_HOURS_BEFORE * 3600000 - now.getTime()) / 60000
-      )
-      skippedOutOfWindow++
-      log('INFO', 'Check', `[SKIP-NOT-YET] ${reservation.nama} — reminder dalam ~${minutesUntilReminder} menit`)
-      continue
-    }
+    if (success) {
+      sent++
 
-    log('CRON', 'Check', `[SEND] ${reservation.nama} (ID: ${reservation.id}) — dalam window H-${REMINDER_HOURS_BEFORE}h`)
-    const sent = await sendReminderToGroup(reservation)
-
-    if (sent) {
-      state.sent[reminderKey] = {
+      state.sent[id] = {
         sentAt: new Date().toISOString(),
-        reservationId: reservation.id,
-        nama: reservation.nama,
-        eventDateTime: eventDateTime.toISOString()
+        event: eventDateTime.toISOString()
       }
-      remindersSent++
+
+      await markReminderSentOnSheet(id)
     }
   }
 
   await saveReminderState(state)
 
-  logDivider()
-  log('SUCCESS', 'Run', `Reminder check selesai — ${new Date().toLocaleString('id-ID')}`)
-  log('INFO', 'Summary', `Total    : ${checked} reservasi`)
-  log('INFO', 'Summary', `Terkirim : ${remindersSent}`)
-  log('INFO', 'Summary', `Skip (sudah terkirim) : ${skippedAlreadySent}`)
-  log('INFO', 'Summary', `Skip (belum waktunya) : ${skippedOutOfWindow}`)
-  log('INFO', 'Summary', `Skip (event lewat)    : ${skippedPast}`)
-  log('INFO', 'Summary', `Skip (dibatalkan)     : ${skippedCancelled}`)
+  log('SUCCESS', 'Run', `Done. Checked=${checked}, Sent=${sent}`)
   logDivider()
 }
 
-// ─────────────────────────────────────────────
-// START CRON (default: 10 jam = 600 menit)
-// ─────────────────────────────────────────────
 export function startReminderCron(intervalMinutes = DEFAULT_INTERVAL_MINUTES) {
-  const intervalHours = (intervalMinutes / 60).toFixed(1)
   logDivider('═')
-  log('CRON', 'Start', `Reservation reminder cron started`)
-  log('CRON', 'Start', `Interval     : every ${intervalMinutes} minutes (${intervalHours} hours)`)
-  log('CRON', 'Start', `Reminder at  : H-${REMINDER_HOURS_BEFORE} hours before event`)
-  log('CRON', 'Start', `Target group : ${GROUP_JID}`)
+  log('CRON', 'Start', `Reminder cron started`)
+  log('CRON', 'Start', `Interval    : setiap ${intervalMinutes} menit`)
+  log('CRON', 'Start', `Kirim jika  : event < ${REMINDER_HOURS_BEFORE} jam lagi`)
+  log('CRON', 'Start', `Target grup : ${GROUP_JID}`)
   logDivider('═')
 
-  // Jalankan sekali langsung saat start
   runReservationReminders()
 
   const intervalId = setInterval(() => {
-    log('CRON', 'Tick', `Interval triggered — running reminder check...`)
+    log('CRON', 'Tick', 'Interval triggered — running reminder check...')
     runReservationReminders()
   }, intervalMinutes * 60 * 1000)
 
@@ -295,15 +298,12 @@ export function startReminderCron(intervalMinutes = DEFAULT_INTERVAL_MINUTES) {
   }
 }
 
-// ─────────────────────────────────────────────
-// STANDALONE MODE
-// ─────────────────────────────────────────────
 if (import.meta.url === `file://${process.argv[1]}`) {
   logDivider('═')
   log('CRON', 'Standalone', '🚀 Running in standalone mode')
-  log('CRON', 'Standalone', `Group JID    : ${GROUP_JID}`)
-  log('CRON', 'Standalone', `Reminder     : H-${REMINDER_HOURS_BEFORE} hours`)
-  log('CRON', 'Standalone', `Interval     : ${DEFAULT_INTERVAL_MINUTES} minutes (${DEFAULT_INTERVAL_MINUTES / 60} hours)`)
+  log('CRON', 'Standalone', `Group JID  : ${GROUP_JID}`)
+  log('CRON', 'Standalone', `Kirim jika : event < ${REMINDER_HOURS_BEFORE} jam lagi`)
+  log('CRON', 'Standalone', `Interval   : ${DEFAULT_INTERVAL_MINUTES} menit`)
   logDivider('═')
 
   const stopCron = startReminderCron(DEFAULT_INTERVAL_MINUTES)

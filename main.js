@@ -18,7 +18,7 @@ import 'dotenv/config'
 // ─────────────────────────────────────────────
 const GROUP_CONFIRMATION_JID = '120363406492419821@g.us'
 const PAYMENT_VERIFICATION_JID = '6285150738708@s.whatsapp.net'
-const ADMIN_JID = '6285856264665@s.whatsapp.net'
+const ADMIN_JID = '6285649204151@s.whatsapp.net'
 const MAX_RECONNECT_ATTEMPTS = 5
 
 let agentExecutor = null
