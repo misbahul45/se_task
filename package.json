@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "node main.js"
+    "dev": "node main.js",
+    "start": "node main.js",
+    "build": "echo 'Build completed'"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
