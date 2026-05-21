@@ -3,7 +3,7 @@ import { createLokaAgent } from './agent/ai.js'
 import 'dotenv/config'
 
 console.log('🧪 Testing createLokaAgent...')
-console.log('GROQ_API_KEY set:', !!process.env.GROQ_API_KEY)
+console.log('OPENROUTER_API_KEY set:', !!process.env.OPENROUTER_API_KEY)
 
 try {
   console.log('📦 Loading agent...')

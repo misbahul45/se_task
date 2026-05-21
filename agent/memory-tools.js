@@ -53,38 +53,40 @@ export class SearchMemoryTool extends Tool {
   }
 
   async _call(input) {
-    try {
-      const { sessionId, query, k } = input;
-      
-      const memories = await this.memoryManager.searchMemories(query, sessionId, k);
+  try {
+    const { sessionId, query, k } = input
 
-      if (memories.length === 0) {
-        return JSON.stringify({
-          success: true,
-          message: 'No relevant memories found',
-          results: []
-        });
-      }
+    const memories = await this.memoryManager.searchMemories(query, sessionId, k)
 
-      const formattedResults = memories.map((m, idx) => ({
-        index: idx + 1,
-        content: m.content,
-        score: Math.round(m.score * 100) / 100,
-        timestamp: m.metadata.timestamp
-      }));
-
+    if (!memories || memories.length === 0) {
       return JSON.stringify({
         success: true,
-        count: memories.length,
-        results: formattedResults
-      });
-    } catch (error) {
-      return JSON.stringify({
-        success: false,
-        error: error.message
-      });
+        message: 'No relevant memories found',
+        results: []
+      })
     }
+
+    const formattedResults = memories.map((m, idx) => ({
+      index: idx + 1,
+      content: m.content,
+      score: Math.round(m.score * 100) / 100,
+      timestamp: m.metadata?.timestamp
+    }))
+
+    return JSON.stringify({
+      success: true,
+      count: memories.length,
+      results: formattedResults
+    })
+  } catch (error) {
+    console.warn('[SearchMemory] Vector store not ready yet:', error.message)
+    return JSON.stringify({
+      success: true,
+      message: 'No memories available yet',
+      results: []
+    })
   }
+}
 }
 
 export class ForgetMemoryTool extends Tool {

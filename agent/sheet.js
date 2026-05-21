@@ -77,30 +77,14 @@ function normalizeDate(date) {
 
 function normalizeTime(time) {
   if (!time) return ''
-
-  const clean = String(time).trim()
-
-  const match = clean.match(
-    /^(\d{1,2}):(\d{1,2})$/
-  )
-
-  if (!match) {
-    throw new Error(
-      'Format jam harus HH:mm'
-    )
-  }
-
+  // Tolerasi titik sebagai pemisah: "14.00" → "14:00"
+  const clean = String(time).trim().replace('.', ':')
+  const match = clean.match(/^(\d{1,2}):(\d{2})$/)
+  if (!match) throw new Error('Format jam harus HH:mm atau HH.mm')
   const hours = Number(match[1])
   const minutes = Number(match[2])
-
-  if (hours > 23 || minutes > 59) {
-    throw new Error('Jam tidak valid')
-  }
-
-  return `${String(hours).padStart(
-    2,
-    '0'
-  )}:${String(minutes).padStart(2, '0')}`
+  if (hours > 23 || minutes > 59) throw new Error('Jam tidak valid')
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
 }
 
 function safeJsonParse(text) {
