@@ -77,7 +77,6 @@ function normalizeDate(date) {
 
 function normalizeTime(time) {
   if (!time) return ''
-  // Tolerasi titik sebagai pemisah: "14.00" → "14:00"
   const clean = String(time).trim().replace('.', ':')
   const match = clean.match(/^(\d{1,2}):(\d{2})$/)
   if (!match) throw new Error('Format jam harus HH:mm atau HH.mm')
@@ -276,6 +275,7 @@ Gunakan tool ini hanya untuk debugging API.
   }
 
   async _call() {
+      console.log('🔥 TOOL DIPANGGIL:', JSON.stringify(input)) 
     try {
       const data = await apiFetch()
 
@@ -303,6 +303,7 @@ Gunakan tool ini untuk melihat daftar reservasi.
   }
 
   async _call() {
+      console.log('🔥 TOOL DIPANGGIL:', JSON.stringify(input)) 
     try {
       const data = await apiFetch({
         action: 'list'
@@ -381,6 +382,7 @@ Gunakan tool ini untuk melihat detail reservasi berdasarkan ID.
   }
 
   async _call(input) {
+      console.log('🔥 TOOL DIPANGGIL:', JSON.stringify(input)) 
     try {
       const data = await apiFetch({
         action: 'detail',
@@ -459,6 +461,7 @@ Gunakan tool ini untuk membuat reservasi baru.
   }
 
   async _call(input) {
+    console.log('🔥 TOOL DIPANGGIL:', JSON.stringify(input)) 
     try {
       const payload = {
         nama: input.nama.trim(),

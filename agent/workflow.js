@@ -2,6 +2,10 @@ import { HumanMessage, AIMessage } from '@langchain/core/messages'
 
 const MAX_ITERATIONS = 6
 
+export function stripThinkBlocks(text) {
+  return text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+}
+
 export function parseToolCall(text) {
   const match = text.match(/TOOL_CALL:\s*(\{[\s\S]*?\})(?:\n|$)/)
   if (!match) return null
@@ -19,7 +23,6 @@ export function stripToolCallLine(text) {
 export async function runTool(tools, toolName, args) {
   const tool = tools.find(t => t.name === toolName)
   if (!tool) return { error: `Tool '${toolName}' tidak ditemukan` }
-
   try {
     const result = await tool.invoke(args)
     return typeof result === 'string' ? JSON.parse(result) : result
@@ -28,9 +31,15 @@ export async function runTool(tools, toolName, args) {
   }
 }
 
-export async function executeReActLoop(llm, tools, systemPrompt, memoryManager, sessionId, userInput) {
+export async function executeReActLoop(
+  llm,
+  tools,
+  systemPrompt,
+  memoryManager,
+  sessionId,
+  userInput
+) {
   const chatHistory = await memoryManager.getChatHistory(sessionId)
-
   const messages = [
     { role: 'system', content: systemPrompt },
     ...chatHistory.map(m => ({
@@ -44,27 +53,38 @@ export async function executeReActLoop(llm, tools, systemPrompt, memoryManager, 
   let iterations = 0
   let currentMessages = [...messages]
 
+  const toolCalls = []
+
   while (iterations < MAX_ITERATIONS) {
     iterations++
 
     const response = await llm.invoke(currentMessages)
-    const responseText = typeof response.content === 'string'
-      ? response.content
-      : JSON.stringify(response.content)
+    const responseText =
+      typeof response.content === 'string'
+        ? response.content
+        : JSON.stringify(response.content)
 
-    const toolCall = parseToolCall(responseText)
+    const cleanText = stripThinkBlocks(responseText)
+    const toolCall = parseToolCall(cleanText)
 
     if (!toolCall) {
-      finalOutput = responseText
+      finalOutput = cleanText
       break
     }
 
     console.log(`[ReAct] Iter ${iterations}: calling tool "${toolCall.tool}" with`, toolCall.args)
 
     const toolResult = await runTool(tools, toolCall.tool, toolCall.args)
+
     console.log(`[ReAct] Tool result:`, toolResult)
 
-    const assistantMsg = { role: 'assistant', content: responseText }
+    toolCalls.push({
+      tool: toolCall.tool,
+      args: toolCall.args,
+      result: toolResult
+    })
+
+    const assistantMsg = { role: 'assistant', content: cleanText }
     const toolResultMsg = {
       role: 'user',
       content: `TOOL_RESULT: ${JSON.stringify(toolResult)}\n\nLanjutkan berdasarkan hasil di atas.`
@@ -81,22 +101,26 @@ export async function executeReActLoop(llm, tools, systemPrompt, memoryManager, 
   await memoryManager.addMessage(sessionId, new AIMessage({ content: finalOutput }))
   await memoryManager.saveLongTermMemory(sessionId, userInput, finalOutput)
 
-  return { output: finalOutput }
+  return { output: finalOutput, toolCalls }
 }
 
 export function handleRateLimit(error) {
-  const isRateLimit = error?.status === 429
-    || error?.message?.includes('429')
-    || error?.message?.includes('rate-limited')
+  const isRateLimit =
+    error?.status === 429 ||
+    error?.message?.includes('429') ||
+    error?.message?.includes('rate-limited')
 
   if (isRateLimit) {
     console.warn('[processMessage] Rate limit hit')
-    return { output: 'Maaf, sistem sedang sibuk. Coba lagi sebentar ya 🙏' }
+    return { output: 'Maaf, sistem sedang sibuk. Coba lagi sebentar ya 🙏', toolCalls: [] }
   }
   return null
 }
 
 export function handleError(error) {
   console.error('[processMessage Error]', error.message)
-  return { output: 'Maaf, sistem sedang mengalami kendala. Silakan coba beberapa saat lagi 🙏' }
+  return {
+    output: 'Maaf, sistem sedang mengalami kendala. Silakan coba beberapa saat lagi 🙏',
+    toolCalls: []
+  }
 }
