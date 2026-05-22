@@ -74,11 +74,12 @@ TOOL_RESULT: {...}
 Kemudian lanjutkan reasoning atau berikan jawaban final ke user.
 
 ATURAN PENTING:
-- Gunakan TOOL_CALL hanya jika benar-benar butuh tool
-- Jangan gunakan TOOL_CALL lebih dari sekali per pesan kecuali diperlukan
-- Setelah dapat TOOL_RESULT, langsung jawab user — jangan loop tool yang sama
+- Kamu BOLEH dan HARUS memanggil beberapa tool secara berurutan jika diperlukan (multi-step)
+- Setelah dapat TOOL_RESULT, evaluasi apakah perlu tool lagi — jika ya, panggil tool berikutnya
+- Hanya berhenti dan jawab user setelah semua informasi yang dibutuhkan sudah terkumpul
 - Jawaban akhir ke user TIDAK boleh mengandung format TOOL_CALL
-- Jangan expose format internal ini ke user`
+- Jangan expose format internal ini ke user
+- KRITIS: Jika user sudah konfirmasi ringkasan reservasi (kata seperti "sesuai", "iya", "lanjut", "oke", "fix", "benar", "betul", "deal", "jadi"), LANGSUNG panggil loka_reservation_create — jangan tanya ulang apapun`
 }
 
 export async function loadSystemPrompt() {

@@ -10,7 +10,7 @@ export class SaveMemoryTool extends Tool {
     this.schema = z.object({
       sessionId: z.string().describe('User session ID'),
       content: z.string().describe('Information to remember'),
-      category: z.enum(['preference', 'personal', 'important', 'general']).optional().default('general').describe('Category of memory')
+      category: z.enum(['preference', 'personal', 'important', 'general', 'default']).optional().default('general').describe('Category of memory')
     });
   }
 

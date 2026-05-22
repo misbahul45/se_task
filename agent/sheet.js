@@ -2,7 +2,7 @@ import { Tool } from '@langchain/core/tools'
 import { z } from 'zod'
 
 const API_URL =
-  'https://script.google.com/macros/s/AKfycbwC1aBbFe3NPtqQn2fdh8Sg6n_XzvTWl6lFVx-Al0KA50QNIpe1S-qOP_R7NJUZTs7bZA/exec'
+  'https://script.google.com/macros/s/AKfycbwrohUnOPWvKy1HX1b0ool2GE1XZtDjPLsZp7Zx5fL22GtInvMmwReRaiueJFL-oXt0Xw/exec'
 
 const DEFAULT_HEADERS = {
   'Content-Type': 'application/json'
@@ -71,7 +71,6 @@ function normalizeDate(date) {
   const year = match[1]
   const month = match[2].padStart(2, '0')
   const day = match[3].padStart(2, '0')
-
   return `${year}-${month}-${day}`
 }
 
@@ -276,7 +275,6 @@ Gunakan tool ini hanya untuk debugging API.
   }
 
   async _call() {
-      console.log('🔥 TOOL DIPANGGIL:', JSON.stringify(input)) 
     try {
       const data = await apiFetch()
 
@@ -297,18 +295,39 @@ export class LokaReservationListTool extends Tool {
     this.name = 'loka_reservation_list'
 
     this.description = `
-Gunakan tool ini untuk melihat daftar reservasi.
+Gunakan tool ini untuk melihat daftar reservasi. Semua parameter bersifat opsional — gunakan filter untuk mempersempit hasil.
+Contoh penggunaan:
+- Semua reservasi: args kosong {}
+- Reservasi hari ini: { "tanggal": "2026-05-22" }
+- Reservasi rentang: { "tanggal_dari": "2026-05-22", "tanggal_sampai": "2026-05-28" }
+- Filter status: { "status": "PENDING" } atau multi: { "status": "PENDING,CONFIRMED" }
+- Filter area: { "area": "Indoor" }
+- Cari nama: { "nama": "Budi" }
+- Kombinasi: { "tanggal": "2026-05-22", "status": "PENDING" }
 `.trim()
 
-    this.schema = z.object({})
+    this.schema = z.object({
+      tanggal:        z.string().optional().describe('Filter tanggal tepat, format YYYY-MM-DD'),
+      tanggal_dari:   z.string().optional().describe('Awal rentang tanggal, format YYYY-MM-DD'),
+      tanggal_sampai: z.string().optional().describe('Akhir rentang tanggal, format YYYY-MM-DD'),
+      status:         z.string().optional().describe('Filter status: PENDING, CONFIRMED, CANCELLED, DONE. Bisa multi pisah koma'),
+      area:           z.string().optional().describe('Filter area, partial match case-insensitive'),
+      nama:           z.string().optional().describe('Cari berdasarkan nama customer, partial match')
+    })
   }
 
-  async _call() {
-      console.log('🔥 TOOL DIPANGGIL:', JSON.stringify(input)) 
+  async _call(input = {}) {
     try {
-      const data = await apiFetch({
-        action: 'list'
-      })
+      const params = { action: 'list' }
+
+      if (input.tanggal)        params.tanggal        = input.tanggal
+      if (input.tanggal_dari)   params.tanggal_dari   = input.tanggal_dari
+      if (input.tanggal_sampai) params.tanggal_sampai = input.tanggal_sampai
+      if (input.status)         params.status         = input.status
+      if (input.area)           params.area           = input.area
+      if (input.nama)           params.nama           = input.nama
+
+      const data = await apiFetch(params)
 
       if (!data.success) {
         return JSON.stringify({
@@ -317,52 +336,27 @@ Gunakan tool ini untuk melihat daftar reservasi.
         })
       }
 
-      const reservations = Array.isArray(
-        data.data
-      )
-        ? data.data
-        : []
+      const reservations = Array.isArray(data.data) ? data.data : []
 
+      // Deduplicate by nama+tanggal+jam
       const uniqueReservations = Object.values(
         reservations.reduce((acc, item) => {
           const key = `${item.nama}_${item.tanggal}_${item.jam}`
-
-          if (!acc[key]) {
-            acc[key] =
-              normalizeReservation(item)
-          }
-
+          if (!acc[key]) acc[key] = normalizeReservation(item)
           return acc
         }, {})
       )
 
-      logger(
-        'SUCCESS',
-        'Reservation',
-        `Fetched ${uniqueReservations.length} unique reservations`,
-        uniqueReservations
-      )
-
-      return JSON.stringify(
-        {
-          success: true,
-          count: uniqueReservations.length,
-          reservations: uniqueReservations
-        },
-        null,
-        2
-      )
-    } catch (error) {
-      logger(
-        'ERROR',
-        'Reservation-List',
-        error.message
-      )
+      logger('SUCCESS', 'Reservation', `Fetched ${uniqueReservations.length} reservations`, { filters: params })
 
       return JSON.stringify({
-        success: false,
-        error: error.message
-      })
+        success: true,
+        count: uniqueReservations.length,
+        reservations: uniqueReservations
+      }, null, 2)
+    } catch (error) {
+      logger('ERROR', 'Reservation-List', error.message)
+      return JSON.stringify({ success: false, error: error.message })
     }
   }
 }
@@ -378,12 +372,11 @@ Gunakan tool ini untuk melihat detail reservasi berdasarkan ID.
 `.trim()
 
     this.schema = z.object({
-      id: z.string().uuid()
+      id: z.string().min(1)
     })
   }
 
   async _call(input) {
-      console.log('🔥 TOOL DIPANGGIL:', JSON.stringify(input)) 
     try {
       const data = await apiFetch({
         action: 'detail',
@@ -527,6 +520,8 @@ Field opsional: area ("Indoor" | "Outdoor"), room_charge (boolean), extra_hour (
         reservation
       )
 
+      console.log('[CreateTool] Full data.data from API:', JSON.stringify(data.data, null, 2))
+
       return JSON.stringify(
         {
           success: true,
@@ -555,11 +550,44 @@ Field opsional: area ("Indoor" | "Outdoor"), room_charge (boolean), extra_hour (
   }
 }
 
+export class LokaReservationUpdateStatusTool extends Tool {
+  constructor() {
+    super()
+    this.name = 'loka_reservation_update_status'
+    this.description = `
+Gunakan tool ini untuk mengubah status reservasi.
+Status yang valid: PENDING, CONFIRMED, CANCELLED, DONE.
+Field wajib: id (string UUID), status (string).
+`.trim()
+    this.schema = z.object({
+      id:     z.string().min(1).describe('ID reservasi (UUID)'),
+      status: z.enum(['PENDING', 'CONFIRMED', 'CANCELLED', 'DONE']).describe('Status baru')
+    })
+  }
+
+  async _call(input) {
+    try {
+      const data = await apiFetch(null, {
+        action: 'update_status',
+        id:     input.id,
+        status: input.status
+      }, 'POST')
+
+      logger('SUCCESS', 'Reservation-UpdateStatus', `Status updated: ${input.id} → ${input.status}`)
+      return JSON.stringify(data, null, 2)
+    } catch (error) {
+      logger('ERROR', 'Reservation-UpdateStatus', error.message)
+      return JSON.stringify({ success: false, error: error.message })
+    }
+  }
+}
+
 export function createLokaReservationTools() {
   return [
     new LokaReservationInfoTool(),
     new LokaReservationListTool(),
     new LokaReservationDetailTool(),
-    new LokaReservationCreateTool()
+    new LokaReservationCreateTool(),
+    new LokaReservationUpdateStatusTool()
   ]
 }

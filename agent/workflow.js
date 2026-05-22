@@ -1,6 +1,6 @@
 import { HumanMessage, AIMessage } from '@langchain/core/messages'
 
-const MAX_ITERATIONS = 6
+const MAX_ITERATIONS = 10
 
 export function stripThinkBlocks(text) {
   return text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
@@ -25,9 +25,14 @@ export async function runTool(tools, toolName, args) {
   if (!tool) return { error: `Tool '${toolName}' tidak ditemukan` }
   try {
     const result = await tool.invoke(args)
-    return typeof result === 'string' ? JSON.parse(result) : result
+    const parsed = typeof result === 'string' ? JSON.parse(result) : result
+    if (parsed?.error) {
+      console.error(`[runTool] Tool "${toolName}" returned error:`, parsed.error)
+    }
+    return parsed
   } catch (err) {
-    return { error: err.message }
+    console.error(`[runTool] Tool "${toolName}" threw exception:`, err.message)
+    return { error: err.message, success: false }
   }
 }
 
@@ -99,7 +104,11 @@ export async function executeReActLoop(
 
   await memoryManager.addMessage(sessionId, new HumanMessage(userInput))
   await memoryManager.addMessage(sessionId, new AIMessage({ content: finalOutput }))
-  await memoryManager.saveLongTermMemory(sessionId, userInput, finalOutput)
+  try {
+    await memoryManager.saveLongTermMemory(sessionId, userInput, finalOutput)
+  } catch (memErr) {
+    console.warn('[ReAct] saveLongTermMemory failed (non-fatal):', memErr.message)
+  }
 
   return { output: finalOutput, toolCalls }
 }

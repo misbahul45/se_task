@@ -11,11 +11,11 @@ import qrcode from 'qrcode'
 import qrcodeTerminal from 'qrcode-terminal'
 import { Boom } from '@hapi/boom'
 import { createLokaAgent, processMessage } from './agent/ai.js'
+import { createGroupAgent, processGroupMessage } from './agent/group-agent.js'
 import { startReminderCron, setWhatsAppSocket } from './agent/cron-reminder.js'
 import 'dotenv/config'
 
 const GROUP_CONFIRMATION_JID = '120363406492419821@g.us'
-const PAYMENT_VERIFICATION_JID = '6285150738708@s.whatsapp.net'
 const ADMIN_JID = '6285649204151@s.whatsapp.net'
 const MAX_RECONNECT_ATTEMPTS = 5
 
@@ -24,6 +24,7 @@ let memoryManager = null
 let sock = null
 let stopCron = null
 let reconnectAttempts = 0
+let botLid = null  // LID format bot (@lid), diisi saat koneksi open
 const processingMessages = new Set()
 const greetedUsers = new Set()
 const userStates = new Map()
@@ -58,6 +59,13 @@ function formatCurrency(amount) {
 function formatDate(d) {
   const months = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember']
   return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`
+}
+
+function parseDateLocal(dateStr) {
+  // Paksa parse sebagai local time (bukan UTC) agar tidak off-by-one di WIB
+  if (!dateStr) return new Date()
+  const clean = String(dateStr).split('T')[0] // ambil YYYY-MM-DD saja
+  return new Date(clean + 'T00:00:00')
 }
 
 function formatTime(timeStr) {
@@ -136,7 +144,7 @@ async function sendConfirmationToGroup(reservationData) {
 • ID: ${reservationData.id}
 • Nama: ${reservationData.nama}
 • WhatsApp: ${reservationData.whatsapp}
-• 📅 Tanggal: ${formatDate(new Date(reservationData.tanggal))}
+• 📅 Tanggal: ${formatDate(parseDateLocal(reservationData.tanggal))}
 • ⏰ Jam: ${formatTime(reservationData.jam)}
 • 👥 Jumlah Tamu: ${reservationData.jumlah_orang} orang
 • 🏠 Area: ${reservationData.kategori || reservationData.area || '-'}
@@ -192,7 +200,7 @@ async function notifyAdminForVerification(reservationData) {
 📋 ID: ${reservationData.id}
 👤 Customer: ${reservationData.nama}
 📱 WA: ${reservationData.whatsapp}
-📅 ${formatDate(new Date(reservationData.tanggal))} | ${formatTime(reservationData.jam)}
+📅 ${formatDate(parseDateLocal(reservationData.tanggal))} | ${formatTime(reservationData.jam)}
 👥 Tamu: ${reservationData.jumlah_orang} orang
 💳 Deposit: ${formatCurrency(reservationData.deposit)}
 
@@ -207,7 +215,15 @@ async function notifyAdminForVerification(reservationData) {
 
 async function handlePostReservation(result, senderJid) {
   const reservationData = result?.reservationData
-  if (!reservationData?.id) return
+  console.log('[handlePostReservation] reservationData:', JSON.stringify(reservationData))
+  if (!reservationData?.id) {
+    log('WARN', 'Workflow', 'No reservationData.id — skipping post-reservation flow')
+    return
+  }
+  if (!reservationData.deposit || !reservationData.total) {
+    log('WARN', 'Workflow', `Missing financial data (deposit=${reservationData.deposit}, total=${reservationData.total}) — skipping post-reservation flow`)
+    return
+  }
 
   log('AGENT', 'Workflow', `Post-reservation triggered for ID: ${reservationData.id}`)
   try {
@@ -220,6 +236,56 @@ async function handlePostReservation(result, senderJid) {
     log('SUCCESS', 'Workflow', `Completed for ID: ${reservationData.id}`)
   } catch (error) {
     log('ERROR', 'Workflow', `Failed: ${error.message}`)
+  }
+}
+
+async function handleGroupMention(groupJid, text, senderName, msg) {
+  const query = text.trim() || 'ada informasi apa?'
+
+  log('AGENT', 'Group', `Group query from ${senderName}: "${query}"`)
+
+  const dedupKey = `group_${groupJid}_${query}`
+  if (processingMessages.has(dedupKey)) return
+  processingMessages.add(dedupKey)
+
+  try {
+    await sock.sendPresenceUpdate('composing', groupJid)
+    const result = await processGroupMessage(query, senderName, groupJid)
+    await sock.sendPresenceUpdate('available', groupJid)
+
+    if (result?.output) {
+      // Balas dengan mention ke pengirim
+      const senderJid = msg.key.participant || msg.key.remoteJid
+      // Bersihkan TOOL_CALL/TOOL_RESULT dari output sebelum dikirim
+      const cleanReply = result.output
+        .split('\n')
+        .filter(line => {
+          const t = line.trim()
+          return !t.startsWith('TOOL_CALL:') && !t.startsWith('TOOL_RESULT:')
+        })
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim()
+
+      if (cleanReply) {
+        await sock.sendMessage(groupJid, {
+          text: cleanReply,
+          mentions: [senderJid]
+        })
+        log('SUCCESS', 'Group', `Reply sent to group ${groupJid}`)
+      } else {
+        log('WARN', 'Group', 'Output empty after cleaning, skipping send')
+      }
+    } else {
+      log('WARN', 'Group', 'No output from group agent', result)
+    }
+  } catch (error) {
+    log('ERROR', 'Group', `Agent failed: ${error.message}`)
+    await sock.sendMessage(groupJid, {
+      text: '⚠️ Maaf, gagal mengambil data. Coba lagi sebentar ya.'
+    })
+  } finally {
+    processingMessages.delete(dedupKey)
   }
 }
 
@@ -240,12 +306,17 @@ async function processUserMessage(senderJid, text, isGroup, msg) {
   }
 
   if (currentState?.state === 'awaiting_payment_proof') {
-    await sock.sendMessage(senderJid, {
-      text: '📸 Bukti transfer diterima! Admin akan memverifikasi dalam < 15 menit. Terima kasih! 🙏'
-    })
-    await notifyAdminForVerification(currentState.data)
-    userStates.delete(senderJid)
-    return
+    // Hanya proses sebagai bukti jika user kirim kata konfirmasi eksplisit
+    // Gambar ditangani di handler imageMessage di atas
+    const isPaymentConfirmText = /sudah (transfer|bayar|kirim)|bukti|konfirmasi|done.*transfer|transfer.*done/i.test(text)
+    if (isPaymentConfirmText) {
+      await sock.sendMessage(senderJid, {
+        text: '📸 Terima kasih! Mohon kirimkan foto bukti transfernya ya, Kak. Admin akan verifikasi dalam < 15 menit. 🙏'
+      })
+      return
+    }
+    // Teks lain (seperti "okay", "done", dll) → teruskan ke agent seperti biasa
+    // tapi jangan hapus state dulu
   }
 
   if (!currentState && /^[123]$/.test(normalizedText)) {
@@ -298,6 +369,10 @@ async function initializeAgent() {
     agentBundle = bundle
     memoryManager = bundle.memoryManager
     log('SUCCESS', 'Init', 'Loka Agent initialized')
+
+    await createGroupAgent()
+    log('SUCCESS', 'Init', 'Group Agent initialized')
+
     return true
   } catch (error) {
     log('ERROR', 'Init', `Failed: ${error.message}`)
@@ -334,7 +409,9 @@ async function startSock() {
     if (connection === 'open') {
       logDivider('═')
       log('SUCCESS', 'Socket', 'WhatsApp connected!')
-      log('WA', 'Socket', `Admin: ${ADMIN_JID} | Group: ${GROUP_CONFIRMATION_JID}`)
+      // Simpan LID bot untuk deteksi mention di grup
+      botLid = sock.user?.lid ? jidNormalizedUser(sock.user.lid) : null
+      log('WA', 'Socket', `Admin: ${ADMIN_JID} | Group: ${GROUP_CONFIRMATION_JID} | BotLID: ${botLid}`)
       logDivider('═')
       reconnectAttempts = 0
 
@@ -386,7 +463,85 @@ async function startSock() {
     const isGroup = jid.endsWith('@g.us')
 
     if (isGroup) {
-      log('INFO', 'Msg', `Group message ignored — private chat only`)
+      // Hanya proses jika dari grup konfirmasi
+      if (jid !== GROUP_CONFIRMATION_JID) return
+
+      const contentType = getContentType(msg.message)
+
+      // Ekstrak teks dari semua kemungkinan content type
+      let groupText = ''
+      if (contentType === 'conversation') {
+        groupText = msg.message.conversation
+      } else if (contentType === 'extendedTextMessage') {
+        groupText = msg.message.extendedTextMessage?.text || ''
+      } else if (contentType === 'imageMessage') {
+        groupText = msg.message.imageMessage?.caption || ''
+      }
+
+      if (!groupText?.trim()) return
+
+      // Ekstrak contextInfo untuk cek mention dan reply
+      const contextInfo =
+        msg.message?.extendedTextMessage?.contextInfo ??
+        msg.message?.imageMessage?.contextInfo ??
+        msg.message?.contextInfo ??
+        {}
+
+      const mentionedJids = contextInfo?.mentionedJid ?? []
+      const botJid = sock?.user?.id ? jidNormalizedUser(sock.user.id) : null
+
+      // Cek apakah pesan ini adalah reply ke pesan bot
+      // Baileys: contextInfo.participant = JID pengirim pesan yang di-reply
+      // contextInfo.stanzaId = ID pesan yang di-reply
+      const quotedParticipant = contextInfo?.participant
+        ? jidNormalizedUser(contextInfo.participant)
+        : null
+      const quotedSender = contextInfo?.remoteJid
+        ? jidNormalizedUser(contextInfo.remoteJid)
+        : null
+
+      const isReplyToBot = !!(quotedParticipant && (
+        (botJid && quotedParticipant === botJid) ||
+        (botLid && quotedParticipant === botLid)
+      )) || !!(quotedSender && (
+        (botJid && quotedSender === botJid) ||
+        (botLid && quotedSender === botLid)
+      ))
+
+      // Cek mention bot
+      const isBotMentioned = mentionedJids.some(j => {
+        const jNorm = jidNormalizedUser(j)
+        if (botJid && jNorm === botJid) return true
+        if (botLid && jNorm === botLid) return true
+        const jNum = j.split('@')[0].replace(/\D/g, '')
+        const botNum = botJid?.split('@')[0].replace(/\D/g, '')
+        return jNum && botNum && jNum === botNum
+      })
+      const hasLokaText = /@loka\b/i.test(groupText)
+
+      // Debug
+      log('INFO', 'Group', `contentType=${contentType} | botJid=${botJid} | botLid=${botLid} | mentionedJids=${JSON.stringify(mentionedJids)} | isReplyToBot=${isReplyToBot} | text="${groupText}"`)
+
+      if (!isBotMentioned && !hasLokaText && !isReplyToBot) {
+        log('INFO', 'Group', `No trigger — isBotMentioned=${isBotMentioned} hasLokaText=${hasLokaText} isReplyToBot=${isReplyToBot}`)
+        return
+      }
+
+      const groupSenderName = msg.pushName || msg.key.participant?.split('@')[0] || 'Anggota'
+      const triggerType = isReplyToBot ? 'reply' : (isBotMentioned ? 'mention' : '@loka text')
+      log('INFO', 'Group', `Trigger: ${triggerType} from ${groupSenderName}`)
+
+      // Bersihkan mention @nomor dan @loka dari teks query
+      const cleanQuery = groupText
+        .replace(/@\d+/g, '')
+        .replace(/@loka\b/gi, '')
+        .trim()
+
+      logDivider()
+      log('EVENT', 'Group', `Bot mention from ${groupSenderName}: "${cleanQuery || groupText}"`)
+      logDivider()
+
+      await handleGroupMention(jid, cleanQuery || groupText, groupSenderName, msg)
       return
     }
 
@@ -409,6 +564,8 @@ async function startSock() {
           })
           await notifyAdminForVerification(currentState.data)
           userStates.delete(sender)
+        } else {
+          log('INFO', 'Msg', `Image from ${senderName} — no active payment state, ignored`)
         }
       } else {
         log('INFO', 'Msg', `Non-text from ${senderName} — ignored`)

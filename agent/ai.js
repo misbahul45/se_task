@@ -1,6 +1,7 @@
 import { ChatOpenAI } from '@langchain/openai'
 import { createLokaReservationTools } from './sheet.js'
 import { createMemoryTools } from './memory-tools.js'
+import { createDateTimeTools } from './datetime-tool.js'
 import { MemoryManager } from './memory-manager.js'
 import { loadSystemPrompt, buildReActSystemPrompt } from './prompts.js'
 import { executeReActLoop, handleRateLimit, handleError } from './workflow.js'
@@ -21,6 +22,7 @@ export async function createLokaAgent() {
   await memoryManager.initialize()
 
   const tools = [
+    ...createDateTimeTools(),
     ...createLokaReservationTools(),
     ...createMemoryTools(memoryManager)
   ]
@@ -38,40 +40,68 @@ function extractReservationData(toolCalls = []) {
 
     const { args, result } = createCall
 
-    if (!result?.success) return null
+    // Log full result untuk debug
+    console.log('[extractReservationData] raw result:', JSON.stringify(result, null, 2))
+
+    if (!result?.success) {
+      console.warn('[extractReservationData] result.success is false:', result)
+      return null
+    }
 
     const reservation = result.reservation ?? result.data ?? {}
 
+    console.log('[extractReservationData] reservation object keys:', Object.keys(reservation))
+
+    // Cari ID dari semua kemungkinan field nama
     const id =
       reservation.id_reservasi ??
       reservation.id ??
       reservation.reservasi_id ??
-      reservation.booking_id
+      reservation.booking_id ??
+      // Cari field apapun yang nilainya mirip format ID (LR-xxxx atau UUID)
+      Object.values(reservation).find(v =>
+        typeof v === 'string' && (
+          /^LR-\d{4}-\d{2}-\d{5,}/.test(v) ||
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
+        )
+      )
 
     if (!id) {
-      console.warn('[extractReservationData] Reservation created but no ID found in response', reservation)
-      return null
+      console.warn('[extractReservationData] No ID found. Full reservation:', JSON.stringify(reservation))
+      // Fallback: coba ambil field pertama yang terlihat seperti ID (string non-kosong, bukan angka murni)
+      const fallbackId = Object.entries(reservation).find(([k, v]) =>
+        typeof v === 'string' && v.length > 4 &&
+        (k.toLowerCase().includes('id') || k.toLowerCase().includes('kode') || k.toLowerCase().includes('no'))
+      )?.[1]
+      if (!fallbackId) return null
+      console.warn('[extractReservationData] Using fallback ID field:', fallbackId)
+      return buildReservationResult(fallbackId, reservation, args)
     }
 
-    return {
-      id,
-      nama: reservation.nama ?? args.nama,
-      whatsapp: reservation.whatsapp ?? args.whatsapp,
-      tanggal: reservation.tanggal ?? args.tanggal,
-      jam: reservation.jam ?? args.jam,
-      jumlah_orang: reservation.jumlah_orang ?? args.jumlah_orang,
-      kategori: reservation.area ?? args.area,
-      area: reservation.area ?? args.area,
-      status: reservation.status,
-      total: reservation.subtotal ?? reservation.total,
-      deposit: reservation.deposit,
-      sisa_pembayaran: reservation.sisa_pembayaran,
-      room_charge: args.room_charge,
-      extra_hour: args.extra_hour,
-      catatan: args.catatan
-    }
-  } catch {
+    return buildReservationResult(id, reservation, args)
+  } catch (e) {
+    console.error('[extractReservationData] exception:', e.message)
     return null
+  }
+}
+
+function buildReservationResult(id, reservation, args) {
+  return {
+    id,
+    nama: reservation.nama ?? args.nama,
+    whatsapp: reservation.whatsapp ?? args.whatsapp,
+    tanggal: reservation.tanggal ?? args.tanggal,
+    jam: reservation.jam ?? args.jam,
+    jumlah_orang: reservation.jumlah_orang ?? args.jumlah_orang,
+    kategori: reservation.area ?? args.area,
+    area: reservation.area ?? args.area,
+    status: reservation.status ?? 'PENDING',
+    total: reservation.subtotal ?? reservation.total ?? 0,
+    deposit: reservation.deposit ?? 0,
+    sisa_pembayaran: reservation.sisa_pembayaran ?? 0,
+    room_charge: args.room_charge,
+    extra_hour: args.extra_hour,
+    catatan: args.catatan
   }
 }
 
