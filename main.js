@@ -8,6 +8,7 @@ import makeWASocket, {
 } from 'baileys'
 import P from 'pino'
 import qrcode from 'qrcode'
+import qrcodeTerminal from 'qrcode-terminal'
 import { Boom } from '@hapi/boom'
 import { createLokaAgent, processMessage } from './agent/ai.js'
 import { startReminderCron, setWhatsAppSocket } from './agent/cron-reminder.js'
@@ -126,16 +127,6 @@ async function forwardToAgent(senderJid, text, msg) {
   }
 }
 
-async function isReservationConfirmed(response) {
-  const lower = response.toLowerCase()
-  const keywords = ['reservasi berhasil', 'booking berhasil', 'id reservasi', 'reservation created', 'berhasil dibuat']
-  return keywords.some(k => lower.includes(k))
-}
-
-function extractReservationId(response) {
-  const match = response.match(/ID[:\s]*([a-f0-9-]{36})/i)
-  return match ? match[1] : null
-}
 
 async function sendConfirmationToGroup(reservationData) {
   try {
@@ -183,7 +174,9 @@ Halo ${reservationData.nama} 👋
 
 📸 Setelah transfer, kirim bukti di chat ini. Admin verifikasi dalam < 15 menit.
 
-_Sisa ${formatCurrency(reservationData.sisa_pembayaran)} dibayar hari-H sebelum acara dimulai._`
+_Sisa ${formatCurrency(reservationData.sisa_pembayaran)} dibayar hari-H sebelum acara dimulai._
+
+Butuh bantuan? Hubungi admin langsung: https://wa.me/6285649204151`
 
     await sock.sendMessage(customerJid, { text: message })
     log('SUCCESS', 'Payment', `Payment instruction sent → ${customerJid}`)
@@ -212,23 +205,19 @@ async function notifyAdminForVerification(reservationData) {
   }
 }
 
-async function handlePostReservation(agentOutput, senderJid) {
-  if (!await isReservationConfirmed(agentOutput)) return
-  const reservationId = extractReservationId(agentOutput)
-  if (!reservationId) return
+async function handlePostReservation(result, senderJid) {
+  const reservationData = result?.reservationData
+  if (!reservationData?.id) return
 
-  log('AGENT', 'Workflow', `Post-reservation triggered for ID: ${reservationId}`)
+  log('AGENT', 'Workflow', `Post-reservation triggered for ID: ${reservationData.id}`)
   try {
-    const detail = await memoryManager.searchMemories(reservationId, senderJid, 1)
-    const reservationData = { ...(detail[0]?.metadata || {}), id: reservationId }
-
     await sendConfirmationToGroup(reservationData)
     await sendPaymentInstruction(senderJid, reservationData)
     await notifyAdminForVerification(reservationData)
 
     userStates.set(senderJid, { state: 'awaiting_payment_proof', data: reservationData })
 
-    log('SUCCESS', 'Workflow', `Completed for ID: ${reservationId}`)
+    log('SUCCESS', 'Workflow', `Completed for ID: ${reservationData.id}`)
   } catch (error) {
     log('ERROR', 'Workflow', `Failed: ${error.message}`)
   }
@@ -266,7 +255,7 @@ async function processUserMessage(senderJid, text, isGroup, msg) {
       const result = await forwardToAgent(senderJid, contextPrompt, msg)
       if (result?.output) {
         await sock.sendMessage(senderJid, { text: result.output })
-        await handlePostReservation(result.output, senderJid)
+        await handlePostReservation(result, senderJid)
       }
       return
     }
@@ -294,7 +283,7 @@ async function processUserMessage(senderJid, text, isGroup, msg) {
   const result = await forwardToAgent(senderJid, text, msg)
   if (result?.output) {
     await sock.sendMessage(senderJid, { text: result.output })
-    await handlePostReservation(result.output, senderJid)
+    await handlePostReservation(result, senderJid)
 
     if (result.output.toLowerCase().includes('wa.me/628515') || result.output.toLowerCase().includes('dihubungkan dengan admin')) {
       userStates.set(senderJid, { state: 'relaying_to_admin', data: {} })
@@ -333,9 +322,12 @@ async function startSock() {
 
     if (qr) {
       log('WA', 'QR', 'Scan QR to login')
+      qrcodeTerminal.generate(qr, { small: true }, (qrString) => {
+        console.log('\n' + qrString + '\n')
+      })
       try {
         const qrDataUrl = await qrcode.toDataURL(qr)
-        console.log('\n🔗 QR Data URL:\n', qrDataUrl, '\n')
+        console.log('🔗 QR Data URL:', qrDataUrl, '\n')
       } catch { console.log('QR (raw):', qr) }
     }
 

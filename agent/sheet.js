@@ -78,7 +78,8 @@ function normalizeDate(date) {
 function normalizeTime(time) {
   if (!time) return ''
   const clean = String(time).trim().replace('.', ':')
-  const match = clean.match(/^(\d{1,2}):(\d{2})$/)
+  const stripped = clean.replace(/^(\d{1,2}:\d{2}):\d{2}$/, '$1')
+  const match = stripped.match(/^(\d{1,2}):(\d{2})$/)
   if (!match) throw new Error('Format jam harus HH:mm atau HH.mm')
   const hours = Number(match[1])
   const minutes = Number(match[2])
@@ -425,7 +426,9 @@ export class LokaReservationCreateTool extends Tool {
     this.name = 'loka_reservation_create'
 
     this.description = `
-Gunakan tool ini untuk membuat reservasi baru.
+Gunakan tool ini untuk membuat reservasi baru. Semua field menggunakan nama bahasa Indonesia.
+Field wajib: nama (string), whatsapp (string, format 08xxx), tanggal (string, format YYYY-MM-DD), jam (string, format HH:mm), jumlah_orang (number).
+Field opsional: area ("Indoor" | "Outdoor"), room_charge (boolean), extra_hour (number 0-5), catatan (string).
 `.trim()
 
     this.schema = z.object({

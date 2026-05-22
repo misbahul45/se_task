@@ -1,4 +1,4 @@
-import { ChatGroq } from '@langchain/groq'
+import { ChatOpenAI } from '@langchain/openai'
 import { createLokaReservationTools } from './sheet.js'
 import { createMemoryTools } from './memory-tools.js'
 import { MemoryManager } from './memory-manager.js'
@@ -7,9 +7,12 @@ import { executeReActLoop, handleRateLimit, handleError } from './workflow.js'
 import 'dotenv/config'
 
 export async function createLokaAgent() {
-  const llm = new ChatGroq({
-    apiKey: process.env.GROQ_API_KEY,
-    model: process.env.LLM_MODEL || 'llama-3.3-70b-versatile',
+  const llm = new ChatOpenAI({
+    apiKey: process.env.FLAZ_API_KEY,
+    configuration: {
+      baseURL: process.env.FLAZ_BASE_URL || 'https://ai.flaz.id/v1'
+    },
+    model: process.env.LLM_MODEL || 'MiniMax-M2.7-highspeed',
     temperature: 0.3,
     maxRetries: 3
   })
@@ -28,31 +31,44 @@ export async function createLokaAgent() {
   return { llm, tools, memoryManager, systemPrompt: fullSystemPrompt }
 }
 
-function extractReservationData(rawOutput) {
+function extractReservationData(toolCalls = []) {
   try {
-    const toolCallMatch = rawOutput.match(/TOOL_CALL:\s*(\{[\s\S]*?\})\s*\n/)
-    const toolResultMatch = rawOutput.match(/TOOL_RESULT:\s*(\{[\s\S]*?\})\s*\n/)
+    const createCall = toolCalls.find(tc => tc.tool === 'loka_reservation_create')
+    if (!createCall) return null
 
-    if (!toolCallMatch || !toolResultMatch) return null
+    const { args, result } = createCall
 
-    const toolCall = JSON.parse(toolCallMatch[1])
-    if (toolCall.tool !== 'loka_reservation_create') return null
+    if (!result?.success) return null
 
-    const toolResult = JSON.parse(toolResultMatch[1])
+    const reservation = result.reservation ?? result.data ?? {}
+
+    const id =
+      reservation.id_reservasi ??
+      reservation.id ??
+      reservation.reservasi_id ??
+      reservation.booking_id
+
+    if (!id) {
+      console.warn('[extractReservationData] Reservation created but no ID found in response', reservation)
+      return null
+    }
 
     return {
-      ...toolCall.args,
-      id: toolResult.id_reservasi ?? toolResult.id,
-      status: toolResult.status,
-      total: toolResult.total_belanja ?? toolResult.total,
-      deposit: toolResult.deposit,
-      sisa_pembayaran: toolResult.sisa_pembayaran,
-      nama: toolCall.args.nama,
-      whatsapp: toolCall.args.whatsapp,
-      tanggal: toolCall.args.tanggal,
-      jam: toolCall.args.jam,
-      jumlah_orang: toolCall.args.tamu ?? toolCall.args.jumlah_orang,
-      kategori: toolCall.args.area
+      id,
+      nama: reservation.nama ?? args.nama,
+      whatsapp: reservation.whatsapp ?? args.whatsapp,
+      tanggal: reservation.tanggal ?? args.tanggal,
+      jam: reservation.jam ?? args.jam,
+      jumlah_orang: reservation.jumlah_orang ?? args.jumlah_orang,
+      kategori: reservation.area ?? args.area,
+      area: reservation.area ?? args.area,
+      status: reservation.status,
+      total: reservation.subtotal ?? reservation.total,
+      deposit: reservation.deposit,
+      sisa_pembayaran: reservation.sisa_pembayaran,
+      room_charge: args.room_charge,
+      extra_hour: args.extra_hour,
+      catatan: args.catatan
     }
   } catch {
     return null
@@ -78,7 +94,7 @@ export async function processMessage(agentBundle, memoryManager, sessionId, user
     const result = await executeReActLoop(llm, tools, systemPrompt, memoryManager, sessionId, userInput)
 
     if (result?.output) {
-      const reservationData = extractReservationData(result.output)
+      const reservationData = extractReservationData(result.toolCalls ?? [])
       result.output = cleanOutput(result.output)
       if (reservationData) result.reservationData = reservationData
     }
