@@ -24,7 +24,7 @@ let memoryManager = null
 let sock = null
 let stopCron = null
 let reconnectAttempts = 0
-let botLid = null  // LID format bot (@lid), diisi saat koneksi open
+let botLid = null  
 const processingMessages = new Set()
 const greetedUsers = new Set()
 const userStates = new Map()
@@ -62,9 +62,8 @@ function formatDate(d) {
 }
 
 function parseDateLocal(dateStr) {
-  // Paksa parse sebagai local time (bukan UTC) agar tidak off-by-one di WIB
   if (!dateStr) return new Date()
-  const clean = String(dateStr).split('T')[0] // ambil YYYY-MM-DD saja
+  const clean = String(dateStr).split('T')[0] 
   return new Date(clean + 'T00:00:00')
 }
 
@@ -306,8 +305,6 @@ async function processUserMessage(senderJid, text, isGroup, msg) {
   }
 
   if (currentState?.state === 'awaiting_payment_proof') {
-    // Hanya proses sebagai bukti jika user kirim kata konfirmasi eksplisit
-    // Gambar ditangani di handler imageMessage di atas
     const isPaymentConfirmText = /sudah (transfer|bayar|kirim)|bukti|konfirmasi|done.*transfer|transfer.*done/i.test(text)
     if (isPaymentConfirmText) {
       await sock.sendMessage(senderJid, {
@@ -315,8 +312,6 @@ async function processUserMessage(senderJid, text, isGroup, msg) {
       })
       return
     }
-    // Teks lain (seperti "okay", "done", dll) → teruskan ke agent seperti biasa
-    // tapi jangan hapus state dulu
   }
 
   if (!currentState && /^[123]$/.test(normalizedText)) {
@@ -345,8 +340,25 @@ async function processUserMessage(senderJid, text, isGroup, msg) {
 
   if (!greetedUsers.has(senderJid)) {
     greetedUsers.add(senderJid)
-    await sock.sendMessage(senderJid, { text: getWelcomeMessage(msg.pushName || 'Kakak') })
-    log('INFO', 'Welcome', `Welcome sent to ${senderJid}`)
+    log('INFO', 'Welcome', `First message from ${senderJid} — forwarding to agent with memory check`)
+
+    const sessionId = jidNormalizedUser(senderJid)
+    const firstMessagePrompt = `[SISTEM: Ini adalah pesan pertama dari user di sesi ini. Nama WhatsApp mereka: "${msg.pushName || 'Kakak'}".
+Lakukan hal berikut:
+1. Panggil search_memory dengan sessionId="${sessionId}" dan query="nama preferensi reservasi" untuk cek apakah ada data user yang tersimpan
+2. Jika ada memori → sapa dengan nama yang tersimpan, tunjukkan bahwa kamu ingat mereka, dan tanyakan apakah ingin melanjutkan dari sebelumnya atau mulai baru
+3. Jika tidak ada memori → sapa hangat dengan nama WhatsApp mereka, lalu tampilkan menu pilihan:
+   *1* 📅 Reservasi Ruang
+   *2* ℹ️ Info & FAQ
+   *3* 👤 Hubungi Admin
+   (tambahkan: _Ketik *MENU* kapan saja untuk kembali ke sini._)
+Pesan user: "${text}"]`
+
+    const result = await forwardToAgent(senderJid, firstMessagePrompt, msg)
+    if (result?.output) {
+      await sock.sendMessage(senderJid, { text: result.output })
+      await handlePostReservation(result, senderJid)
+    }
     return
   }
 

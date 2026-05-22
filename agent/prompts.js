@@ -63,7 +63,18 @@ ${toolsDesc}
 Untuk menggunakan tool, tulis PERSIS dalam format ini (satu baris JSON):
 TOOL_CALL: {"tool": "nama_tool", "args": {"key": "value"}}
 
-Contoh pemanggilan loka_reservation_create yang BENAR:
+Contoh-contoh TOOL_CALL yang BENAR:
+
+Ambil semua reservasi:
+TOOL_CALL: {"tool": "loka_reservation_list", "args": {}}
+
+Ambil reservasi hari ini (gunakan tanggal dari get_datetime):
+TOOL_CALL: {"tool": "loka_reservation_list", "args": {"tanggal": "2026-05-22"}}
+
+Ambil tanggal sekarang:
+TOOL_CALL: {"tool": "get_datetime", "args": {}}
+
+Buat reservasi baru:
 TOOL_CALL: {"tool": "loka_reservation_create", "args": {"nama": "Budi Santoso", "whatsapp": "081234567890", "tanggal": "2026-05-10", "jam": "14:00", "jumlah_orang": 10, "area": "Indoor", "room_charge": false, "extra_hour": 0, "catatan": ""}}
 
 ⚠️ WAJIB: Gunakan nama field PERSIS seperti di schema (bahasa Indonesia): nama, whatsapp, tanggal, jam, jumlah_orang, area, room_charge, extra_hour, catatan. JANGAN gunakan: name, phone, date, time, guests, notes.
@@ -79,7 +90,8 @@ ATURAN PENTING:
 - Hanya berhenti dan jawab user setelah semua informasi yang dibutuhkan sudah terkumpul
 - Jawaban akhir ke user TIDAK boleh mengandung format TOOL_CALL
 - Jangan expose format internal ini ke user
-- KRITIS: Jika user sudah konfirmasi ringkasan reservasi (kata seperti "sesuai", "iya", "lanjut", "oke", "fix", "benar", "betul", "deal", "jadi"), LANGSUNG panggil loka_reservation_create — jangan tanya ulang apapun`
+- KRITIS: Jika user sudah konfirmasi ringkasan reservasi (kata seperti "sesuai", "iya", "lanjut", "oke", "fix", "benar", "betul", "deal", "jadi"), LANGSUNG panggil loka_reservation_create — jangan tanya ulang apapun
+- ANTI-HALLUCINATION: JANGAN PERNAH mengarang atau menebak data reservasi. Semua data reservasi HARUS diambil dari tool loka_reservation_list atau loka_reservation_detail. Jika tool belum dipanggil, panggil dulu sebelum menjawab.`
 }
 
 export async function loadSystemPrompt() {

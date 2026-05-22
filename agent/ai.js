@@ -40,7 +40,6 @@ function extractReservationData(toolCalls = []) {
 
     const { args, result } = createCall
 
-    // Log full result untuk debug
     console.log('[extractReservationData] raw result:', JSON.stringify(result, null, 2))
 
     if (!result?.success) {
