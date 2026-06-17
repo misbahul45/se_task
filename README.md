@@ -1,224 +1,517 @@
-# 🤖 WA Agent — Loka Coffee & Eatery Bot
+# WA Agent - Loka Coffee & Eatery Bot
 
-> WhatsApp reservation assistant built with Baileys + LangChain + FAISS memory.
+Bot WhatsApp untuk membantu operasional reservasi ruang di Loka Coffee & Eatery. Project ini menggabungkan Baileys untuk koneksi WhatsApp, LangChain untuk agent ReAct, Google Apps Script/Google Sheets sebagai backend reservasi, FAISS sebagai vector memory, dan model LLM OpenAI-compatible melalui Flaz ID.
 
-Bot WhatsApp otomatis untuk menangani **reservasi ruang**, **informasi paket**, **pengingat jadwal**, dan **komunikasi admin** di **Loka Coffee & Eatery**. Menggunakan agen ReAct (Reasoning + Acting) berbasis LLM dengan memori jangka pendek dan panjang per pelanggan.
+## Daftar Isi
 
----
+- [Fitur Utama](#fitur-utama)
+- [Teknologi](#teknologi)
+- [Struktur Project](#struktur-project)
+- [Cara Kerja Singkat](#cara-kerja-singkat)
+- [Prasyarat](#prasyarat)
+- [Instalasi](#instalasi)
+- [Konfigurasi Environment](#konfigurasi-environment)
+- [Menjalankan Bot](#menjalankan-bot)
+- [Script NPM](#script-npm)
+- [Alur Percakapan Private Chat](#alur-percakapan-private-chat)
+- [Alur Grup Internal](#alur-grup-internal)
+- [Tools Agent](#tools-agent)
+- [Sistem Memori](#sistem-memori)
+- [Reminder Otomatis](#reminder-otomatis)
+- [Integrasi API Reservasi](#integrasi-api-reservasi)
+- [File Runtime](#file-runtime)
+- [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
+- [Keamanan](#keamanan)
+- [Catatan Operasional](#catatan-operasional)
 
-## ✨ Fitur
+## Fitur Utama
 
-| Fitur | Deskripsi |
-|-------|-----------|
-| **📅 Reservasi** | Panduan booking langkah demi langkah → nama, tanggal, jam, jumlah tamu, area, add-on |
-| **💾 Memori Cerdas** | Short-term memory (riwayat chat) + Long-term memory (FAISS vector search) per session |
-| **💳 Pembayaran** | Kirim instruksi transfer (BCA/BRI) + notifikasi admin saat bukti diterima |
-| **👥 Konfirmasi Grup** | Notifikasi reservasi baru ke grup internal |
-| **⏰ Reminder Otomatis** | Cron setiap 30 menit — kirim pengingat ke grup + customer H-5 jam |
-| **🔗 Hubungi Admin** | Forward pesan customer ke admin WhatsApp |
-| **🧠 ReAct Agent** | Agent bisa panggil tools: `loka_reservation_create`, `search_memory`, dll |
-| **📱 Menu Interaktif** | Menu 1=Reservasi, 2=Info & FAQ, 3=Hubungi Admin |
+- Reservasi ruang lewat WhatsApp private chat.
+- Menu awal: reservasi ruang, info/FAQ, dan hubungi admin.
+- Agent ReAct yang dapat memanggil tool reservasi, tool tanggal/waktu, dan tool memori.
+- Integrasi Google Apps Script untuk list, detail, create, dan update status reservasi.
+- Notifikasi reservasi baru ke grup internal.
+- Instruksi pembayaran deposit otomatis ke customer.
+- Notifikasi admin saat reservasi baru perlu diverifikasi.
+- Penerimaan bukti pembayaran berupa gambar saat user berada di state menunggu bukti transfer.
+- Agent khusus grup internal untuk cek daftar reservasi dan update status melalui mention/reply.
+- Reminder otomatis H-5 jam ke grup dan customer.
+- Short-term memory berbasis JSON dan long-term memory berbasis FAISS per session WhatsApp.
+- Auto reconnect WhatsApp dengan batas percobaan.
 
----
+## Teknologi
 
-## 🏗️ Arsitektur
+| Komponen | Library/Runtime | Fungsi |
+| --- | --- | --- |
+| Runtime | Node.js ESM | Menjalankan aplikasi bot |
+| Package manager | pnpm | Instalasi dependency |
+| WhatsApp client | `baileys` | WhatsApp Web multi-device socket |
+| LLM client | `@langchain/openai` | Client OpenAI-compatible untuk Flaz ID |
+| Agent | LangChain + custom ReAct loop | Reasoning dan tool calling |
+| Schema tool | `zod` | Validasi input tool |
+| Vector store | `faiss-node` | Long-term memory similarity search |
+| Embedding lokal | `@xenova/transformers` | Embedding `Xenova/all-MiniLM-L6-v2` |
+| Logger | `pino` | Logger Baileys |
+| QR | `qrcode`, `qrcode-terminal` | QR login WhatsApp |
+| Env loader | `dotenv` | Membaca konfigurasi `.env` |
 
-```
-wa-agent/
-├── main.js                     ← Entry point — WhatsApp socket + message routing
+## Struktur Project
+
+```text
+.
+├── main.js                         # Entry point WhatsApp socket, routing pesan, state user
+├── test.js                         # Script test Google Apps Script API
+├── package.json                    # Metadata, scripts, dependencies
+├── pnpm-workspace.yaml             # Konfigurasi pnpm build dependencies
+├── pnpm-lock.yaml                  # Lockfile dependency
+├── .env.example                    # Contoh konfigurasi environment
 ├── agent/
-│   ├── ai.js                   ← Factory agent (LLM, tools, memory)
-│   ├── workflow.js             ← ReAct loop engine (max 6 iterasi)
-│   ├── prompts.js              ← Builder system prompt + schema tools
-│   ├── system-prompt.md        ← Knowledge base + aturan (Bahasa Indonesia)
-│   ├── sheet.js                ← Tools: CRUD reservasi via Google Sheets API
-│   ├── memory-manager.js       ← Short-term (JSON) + Long-term (FAISS) memory
-│   ├── memory-tools.js         ← Tools: save/search/forget/clear memory
-│   ├── cron-reminder.js        ← Cron reminder otomatis tiap 30 menit
-│   └── xenova-embeddings.js    ← Local embeddings (all-MiniLM-L6-v2)
-├── auth_info/                  ← Auth WhatsApp (auto-generated)
-├── memory-store/               ← Data runtime:
-│   ├── short-term/             ←   Riwayat chat per session (JSON)
-│   ├── long-term/              ←   Vector store FAISS per session
-│   └── reminder-state.json     ←   State pengingat (cegah duplikat)
-├── test.js                     ← Test Google Sheets API
-├── test-agent-init.js          ← Test inisialisasi agent
-├── package.json
-├── .env                        ← Config: API key, model, base URL
-└── .gitignore
+│   ├── ai.js                       # Factory private agent dan processMessage
+│   ├── group-agent.js              # Agent khusus grup internal
+│   ├── workflow.js                 # Custom ReAct loop dan eksekusi tool
+│   ├── prompts.js                  # Builder prompt dan deskripsi tool
+│   ├── system-prompt.md            # Knowledge base dan SOP respons bot
+│   ├── sheet.js                    # Tool reservasi via Google Apps Script
+│   ├── datetime-tool.js            # Tool tanggal/waktu WIB
+│   ├── memory-manager.js           # Short-term dan long-term memory manager
+│   ├── memory-tools.js             # Tool save/search/forget memory
+│   ├── xenova-embeddings.js        # Adapter embeddings lokal Xenova
+│   └── cron-reminder.js            # Reminder reservasi otomatis
+├── auth_info/                      # Kredensial login WhatsApp, dibuat otomatis
+└── memory-store/                   # Data runtime memori dan reminder, dibuat otomatis
+    ├── short-term/
+    ├── long-term/
+    └── reminder-state.json
 ```
 
----
+Folder `auth_info/`, `memory-store/`, dan `node_modules/` adalah data lokal/runtime dan tidak seharusnya masuk git.
 
-## 🧠 Alur Kerja
+## Cara Kerja Singkat
 
-### 1. Pesan Masuk
+```text
+Pesan WhatsApp masuk
+  -> main.js membaca tipe chat dan konten pesan
+  -> private chat diproses oleh state machine user
+  -> pesan diteruskan ke private agent jika perlu jawaban AI/tool
+  -> agent menjalankan ReAct loop
+  -> tool dipanggil jika model mengeluarkan TOOL_CALL
+  -> hasil akhir dibersihkan dari format internal
+  -> bot mengirim balasan ke WhatsApp
 ```
-User WA → main.js → Cek state (menu/payment/admin/agent)
-```
 
-### 2. State Machine
-| State | Aksi |
-|-------|------|
-| Baru pertama chat | Kirim **menu utama** (1/2/3) |
-| Pilih **1** (Reservasi) | Context prompt → Agent mulai booking flow |
-| Pilih **2** (Info & FAQ) | Context prompt → Agent jawab informasi |
-| Pilih **3** (Hubungi Admin) | Forward pesan ke admin |
-| `awaiting_payment_proof` | User kirim bukti → notifikasi admin |
-| `relaying_to_admin` | Pesan diferuskan ke admin JID |
-| Lainnya | **Free chat** → Agent dengan semua tools |
+Untuk grup internal, bot hanya merespons jika pesan berada di grup konfirmasi dan memenuhi salah satu trigger:
 
-### 3. ReAct Agent Loop
-```
-Input → (system prompt + chat history + user input)
-     → LLM → output mengandung TOOL_CALL?
-         → Ya → parse → run tool → TOOL_RESULT → loop (max 6x)
-         → Tidak → final output ke user
-```
-Tools yang tersedia:
-- **Reservasi:** `loka_reservation_list`, `loka_reservation_detail`, `loka_reservation_create`, `loka_reservation_info`
-- **Memory:** `save_memory`, `search_memory`, `forget_memory`, `get_all_memories`, `memory_stats`, `clear_all_memories`
+- mention akun bot;
+- teks mengandung `@loka`;
+- pesan adalah reply ke pesan bot.
 
-### 4. Post-Reservation
-Setelah `loka_reservation_create` sukses:
-1. Kirim konfirmasi ke grup internal
-2. Kirim instruksi pembayaran (deposit 50%) ke customer
-3. Notifikasi admin untuk verifikasi
-4. Set state `awaiting_payment_proof`
+## Prasyarat
 
-### 5. Reminder Otomatis
-Cron tiap 30 menit → fetch semua reservasi dari API → parse datetime → jika event < 5 jam lagi → kirim reminder ke grup + customer → update state.
+- Node.js 18 atau lebih baru.
+- pnpm.
+- Nomor WhatsApp yang akan dipakai sebagai bot.
+- API key Flaz ID atau provider LLM OpenAI-compatible.
+- Akses ke Google Apps Script API reservasi yang dipakai di `agent/sheet.js`, `agent/cron-reminder.js`, dan `test.js`.
+- Environment yang mendukung native build dependency untuk `faiss-node`.
 
----
-
-## 💾 Sistem Memori
-
-### Short-Term Memory
-- Riwayat chat per session ID (file JSON di `memory-store/short-term/`)
-- Maks 50 pesan terakhir
-- Disimpan otomatis setiap kali agent merespon
-
-### Long-Term Memory
-- **FAISS vector store** per session (`memory-store/long-term/`)
-- **Embeddings lokal** via `@xenova/transformers` (all-MiniLM-L6-v2)
-- Auto-extract memori penting (nama, preferensi, dll)
-- Pencarian similarity (`search_memory`) untuk recall konteks sesi sebelumnya
-
----
-
-## 🔗 External APIs
-
-| API | URL | Kegunaan |
-|-----|-----|----------|
-| **Flaz ID** (OpenAI-compatible) | `https://ai.flaz.id/v1` | LLM provider (MiniMax-M2.7-highspeed) |
-| **Google Apps Script** | `https://script.google.com/macros/s/.../exec` | Backend CRUD reservasi (Google Sheets) |
-
----
-
-## 🚀 Cara Menjalankan
-
-### Prasyarat
-- Node.js >= 18
-- pnpm
-
-### Instalasi
+## Instalasi
 
 ```bash
-# Clone repo
-git clone <repo-url>
-cd wa-agent
-
-# Install dependencies
 pnpm install
+```
 
-# Build native modules (faiss-node, sharp, dll)
+Jika dependency native perlu dibangun ulang:
+
+```bash
 pnpm rebuild
 ```
 
-### Konfigurasi
+`pnpm-workspace.yaml` sudah mengizinkan build untuk dependency berikut:
 
-Buat file `.env` (sudah tersedia untuk development):
+- `baileys`
+- `faiss-node`
+- `protobufjs`
+- `sharp`
+
+## Konfigurasi Environment
+
+Buat file `.env` di root project:
 
 ```env
 FLAZ_BASE_URL=https://ai.flaz.id/v1
-FLAZ_API_KEY=sk-xxx
+FLAZ_API_KEY=sk-isi-api-key-anda
 LLM_MODEL=MiniMax-M2.7-highspeed
 ```
 
-### Menjalankan
+| Variable | Wajib | Default di kode | Keterangan |
+| --- | --- | --- | --- |
+| `FLAZ_BASE_URL` | Tidak | `https://ai.flaz.id/v1` | Base URL provider LLM OpenAI-compatible |
+| `FLAZ_API_KEY` | Ya | Tidak ada | API key untuk LLM |
+| `LLM_MODEL` | Tidak | `MiniMax-M2.7-highspeed` | Nama model yang dipakai private dan group agent |
+
+Pastikan `.env` tidak dikomit. File `.gitignore` sudah mengecualikan `.env`.
+
+## Menjalankan Bot
 
 ```bash
-# Mode development
 pnpm dev
-
-# Atau langsung
-node main.js
 ```
 
-**Pertama kali**: scan QR code yang muncul di terminal dengan WhatsApp.
-
-### Testing
+Atau:
 
 ```bash
-# Test Google Sheets API
-node test.js
-
-# Test inisialisasi agent
-node test-agent-init.js
-
-# Test reminder standalone
-node agent/cron-reminder.js
+pnpm start
 ```
 
----
+Saat pertama kali berjalan, bot akan menampilkan QR code di terminal. Scan QR tersebut menggunakan WhatsApp pada nomor yang akan dijadikan bot.
 
-## ⚙️ Konfigurasi Penting
+Setelah koneksi terbuka:
 
-### main.js
-| Variabel | Nilai | Keterangan |
-|----------|-------|------------|
-| `GROUP_CONFIRMATION_JID` | `120363406492419821@g.us` | Grup notifikasi |
-| `PAYMENT_VERIFICATION_JID` | `6285150738708@s.whatsapp.net` | Admin verifikasi pembayaran |
-| `ADMIN_JID` | `6285649204151@s.whatsapp.net` | Admin utama |
-| `MAX_RECONNECT_ATTEMPTS` | `5` | Maks reconnect WhatsApp |
-| `MAX_ITERATIONS` (workflow.js) | `6` | Maks loop ReAct |
+- agent private diinisialisasi;
+- agent grup diinisialisasi;
+- socket WhatsApp disimpan untuk cron reminder;
+- reminder cron berjalan setiap 30 menit;
+- admin menerima pesan bahwa bot online.
 
-### system-prompt.md
-Berisi knowledge base lengkap: paket harga, ketentuan, alur booking, format chat WhatsApp, aturan penggunaan tools.
+## Script NPM
 
-### cron-reminder.js
-| Variabel | Nilai |
-|----------|-------|
-| `REMINDER_HOURS_BEFORE` | `5` jam |
-| `DEFAULT_INTERVAL_MINUTES` | `30` menit |
+| Script | Perintah | Keterangan |
+| --- | --- | --- |
+| `dev` | `node main.js` | Menjalankan bot untuk development |
+| `start` | `node main.js` | Menjalankan bot |
+| `build` | `echo 'Build completed'` | Placeholder build script |
 
----
+## Alur Percakapan Private Chat
 
-## 📦 Teknologi
+### Menu awal
 
-| Teknologi | Versi | Fungsi |
-|-----------|-------|--------|
-| **Baileys** | `7.0.0-rc11` | WhatsApp Web API (multi-device) |
-| **LangChain** | `^0.2.x` | Agent framework (ReAct, tools, memory) |
-| **ChatOpenAI** | `0.2.11` | OpenAI-compatible LLM client |
-| **FAISS** (faiss-node) | `^0.5.1` | Vector similarity search |
-| **Xenova Transformers** | `^2.17.2` | Local embeddings (ONNX runtime) |
-| **Zod** | `^3.23.8` | Schema validation tools |
-| **Pino** | `^9.0.0` | Logger (silent for Baileys) |
-| **QR Code** | `^1.5.4` | QR login display |
+Jika user pertama kali mengirim pesan, bot mengecek memori lama melalui `search_memory`. Jika tidak ada memori relevan, bot menampilkan menu:
 
----
+```text
+1. Reservasi Ruang
+2. Info & FAQ
+3. Hubungi Admin
+```
 
-## 📝 Catatan Penting
+User dapat mengetik `MENU`, `BACK`, atau `MULAI` untuk kembali ke menu utama.
 
-- **Cancel/Reschedule** tidak memiliki tool — hubungi admin langsung
-- **Reschedule** maks H-1, **pembatalan** deposit hangus
-- **Format pesan WA**: bold dengan `*teks*`, maks 3-4 kalimat/pesan, satu topik/pesan
-- **Auto-reconnect** jika koneksi WhatsApp putus (max 5 kali, exponential backoff)
-- **Duplikasi reminder dicegah** via `reminder-state.json` dan kolom `reminder_status` di Google Sheets
+### Pilihan 1: Reservasi Ruang
 
----
+Bot meneruskan konteks reservasi ke agent. Agent akan mengumpulkan data secara bertahap:
 
-## 📄 Lisensi
+- nama;
+- nomor WhatsApp;
+- tanggal reservasi;
+- jam;
+- jumlah tamu;
+- area;
+- room charge jika diperlukan;
+- extra hour jika diperlukan;
+- catatan tambahan.
 
-Proprietary — Internal use Loka Coffee & Eatery.
+Jika data sudah dikonfirmasi, agent memanggil `loka_reservation_create`. Setelah reservasi berhasil dibuat, sistem menjalankan post-reservation flow:
+
+1. Mengirim detail reservasi ke grup internal.
+2. Mengirim instruksi pembayaran deposit ke customer.
+3. Mengirim notifikasi ke admin untuk verifikasi.
+4. Mengubah state customer menjadi `awaiting_payment_proof`.
+
+### Pilihan 2: Info & FAQ
+
+Bot menjawab pertanyaan tentang paket, harga, fasilitas, aturan reservasi, pembayaran, atau informasi lain berdasarkan `agent/system-prompt.md` dan tool yang tersedia.
+
+### Pilihan 3: Hubungi Admin
+
+Bot memberikan kontak admin dan dapat meneruskan pesan customer ke admin. Jika output agent mengarah ke admin, state user dapat berubah menjadi `relaying_to_admin`.
+
+### Bukti pembayaran
+
+Jika user berada pada state `awaiting_payment_proof`:
+
+- pesan teks seperti "sudah transfer" akan dibalas dengan permintaan mengirim foto bukti transfer;
+- gambar tanpa caption akan dianggap sebagai bukti transfer;
+- bot memberi tahu customer bahwa bukti diterima;
+- admin dinotifikasi untuk verifikasi.
+
+## Alur Grup Internal
+
+Bot hanya membaca grup dengan JID:
+
+```text
+120363406492419821@g.us
+```
+
+Di grup ini, bot dapat membantu staff untuk:
+
+- melihat reservasi hari ini;
+- melihat reservasi besok;
+- melihat reservasi minggu ini;
+- mencari reservasi berdasarkan nama;
+- memfilter berdasarkan area;
+- melihat reservasi mendatang;
+- update status reservasi jika ID jelas.
+
+Agent grup dibatasi hanya memakai tool berikut:
+
+- `get_datetime`
+- `loka_reservation_list`
+- `loka_reservation_detail`
+- `loka_reservation_update_status`
+
+Agent grup tidak boleh membuat reservasi baru.
+
+## Tools Agent
+
+### Date/time
+
+| Tool | Fungsi |
+| --- | --- |
+| `get_datetime` | Mengambil tanggal dan waktu sekarang dalam timezone Asia/Jakarta, termasuk `tanggal_iso` dan `besok_iso` |
+
+### Reservasi
+
+| Tool | Fungsi |
+| --- | --- |
+| `loka_reservation_info` | Debug/info API |
+| `loka_reservation_list` | Mengambil daftar reservasi dengan filter tanggal, rentang tanggal, status, area, atau nama |
+| `loka_reservation_detail` | Mengambil detail reservasi berdasarkan ID |
+| `loka_reservation_create` | Membuat reservasi baru |
+| `loka_reservation_update_status` | Mengubah status reservasi menjadi `PENDING`, `CONFIRMED`, `CANCELLED`, atau `DONE` |
+
+### Memori
+
+| Tool | Fungsi |
+| --- | --- |
+| `save_memory` | Menyimpan informasi penting user ke long-term memory |
+| `search_memory` | Mencari memori relevan berdasarkan query |
+| `forget_memory` | Menghapus memori tertentu berdasarkan query |
+| `get_all_memories` | Melihat semua memori untuk session tertentu |
+| `memory_stats` | Melihat statistik short-term dan long-term memory |
+| `clear_all_memories` | Menghapus semua long-term memory session tertentu |
+
+## Sistem Memori
+
+Project menggunakan dua lapis memori per session WhatsApp.
+
+### Short-term memory
+
+- Disimpan sebagai JSON di `memory-store/short-term/`.
+- Maksimal 50 pesan terakhir per session.
+- Dipakai untuk menjaga konteks percakapan berjalan.
+
+### Long-term memory
+
+- Disimpan sebagai FAISS vector store di `memory-store/long-term/`.
+- Menggunakan embedding lokal `Xenova/all-MiniLM-L6-v2`.
+- Dipakai untuk mengingat preferensi, nama, atau informasi penting customer.
+- Agent dapat mencari ulang memori lama melalui `search_memory`.
+
+## Reminder Otomatis
+
+`agent/cron-reminder.js` menjalankan pengecekan reservasi berkala.
+
+| Konfigurasi | Nilai |
+| --- | --- |
+| Interval default | 30 menit |
+| Reminder dikirim | 5 jam sebelum acara |
+| Timezone | Asia/Jakarta/WIB |
+| State lokal | `memory-store/reminder-state.json` |
+
+Alur reminder:
+
+1. Ambil daftar reservasi dari Google Apps Script.
+2. Lewati reservasi `CANCELLED`.
+3. Lewati reservasi yang sudah memiliki `reminder_status` terkirim.
+4. Parse tanggal dan jam reservasi.
+5. Jika waktu acara berada dalam window H-5 jam, kirim reminder ke grup dan customer.
+6. Simpan state lokal dan update status reminder di sheet.
+
+## Integrasi API Reservasi
+
+Project memakai Google Apps Script sebagai API backend reservasi. URL API saat ini masih hardcoded di beberapa file:
+
+- `agent/sheet.js`
+- `agent/cron-reminder.js`
+- `test.js`
+
+Endpoint digunakan dengan pola berikut:
+
+### List reservasi
+
+```text
+GET <API_URL>?action=list
+GET <API_URL>?action=list&tanggal=YYYY-MM-DD
+GET <API_URL>?action=list&tanggal_dari=YYYY-MM-DD&tanggal_sampai=YYYY-MM-DD
+GET <API_URL>?action=list&status=PENDING
+GET <API_URL>?action=list&area=Indoor
+GET <API_URL>?action=list&nama=Budi
+```
+
+### Detail reservasi
+
+```text
+GET <API_URL>?action=detail&id=<reservation-id>
+```
+
+### Create reservasi
+
+```json
+{
+  "nama": "Budi Santoso",
+  "whatsapp": "081234567890",
+  "tanggal": "2026-05-10",
+  "jam": "14:00",
+  "jumlah_orang": 10,
+  "area": "Indoor",
+  "room_charge": false,
+  "extra_hour": 0,
+  "catatan": ""
+}
+```
+
+### Update status
+
+```json
+{
+  "action": "update_status",
+  "id": "<reservation-id>",
+  "status": "CONFIRMED"
+}
+```
+
+### Mark reminder sent
+
+```json
+{
+  "action": "mark_reminder_sent",
+  "id": "<reservation-id>"
+}
+```
+
+## File Runtime
+
+| Path | Fungsi | Aman dihapus? |
+| --- | --- | --- |
+| `auth_info/` | Kredensial session WhatsApp | Ya, tetapi bot harus scan QR ulang |
+| `memory-store/short-term/` | Riwayat chat pendek | Ya, konteks chat hilang |
+| `memory-store/long-term/` | Vector memory FAISS | Ya, memori customer hilang |
+| `memory-store/reminder-state.json` | State reminder terkirim | Hati-hati, dapat memicu reminder duplikat |
+| `node_modules/` | Dependency | Ya, install ulang dengan `pnpm install` |
+
+## Testing
+
+### Test API reservasi
+
+```bash
+node test.js
+```
+
+Script ini akan:
+
+- mengambil info API;
+- mengambil daftar reservasi;
+- mengambil detail reservasi pertama jika ada;
+- membuat data reservasi test;
+- mengambil detail data test yang baru dibuat.
+
+Perhatian: `node test.js` dapat membuat data reservasi baru di backend yang dikonfigurasi.
+
+### Test bot manual
+
+1. Jalankan `pnpm dev`.
+2. Scan QR WhatsApp jika belum login.
+3. Kirim pesan private ke nomor bot.
+4. Coba ketik `MENU`.
+5. Coba pilih `1`, `2`, atau `3`.
+6. Untuk grup, mention bot atau kirim pesan dengan `@loka` di grup internal.
+
+## Troubleshooting
+
+### QR muncul terus atau login gagal
+
+Hapus session WhatsApp lalu jalankan ulang:
+
+```bash
+rm -rf auth_info
+pnpm dev
+```
+
+Lalu scan QR baru.
+
+### Bot logged out
+
+Jika log menampilkan status logged out, session tidak bisa dipakai lagi. Hapus `auth_info/` dan login ulang.
+
+### Agent gagal inisialisasi
+
+Periksa:
+
+- `.env` sudah ada;
+- `FLAZ_API_KEY` valid;
+- `FLAZ_BASE_URL` benar;
+- model pada `LLM_MODEL` tersedia di provider;
+- koneksi internet server aktif.
+
+### Error native dependency FAISS
+
+Coba jalankan:
+
+```bash
+pnpm rebuild
+```
+
+Jika masih gagal, pastikan versi Node.js dan toolchain build native module sesuai untuk environment.
+
+### Reminder tidak terkirim
+
+Periksa:
+
+- bot sudah connected;
+- `setWhatsAppSocket(sock)` berhasil dipanggil setelah socket open;
+- cron berjalan setelah agent init;
+- data reservasi memiliki `tanggal`, `jam`, `id`, dan `whatsapp`;
+- reservasi belum berstatus `CANCELLED`;
+- `reminder_status` belum `SENT`;
+- `memory-store/reminder-state.json` tidak menandai ID tersebut sebagai sudah terkirim.
+
+### Bot tidak membalas di grup
+
+Pastikan:
+
+- pesan dikirim di grup JID yang sama dengan `GROUP_CONFIRMATION_JID`;
+- bot dimention, pesan mengandung `@loka`, atau pesan adalah reply ke pesan bot;
+- pesan memiliki teks/caption yang bisa dibaca.
+
+### Data reservasi tidak sesuai
+
+Periksa Google Apps Script API yang dipakai di:
+
+- `agent/sheet.js`
+- `agent/cron-reminder.js`
+- `test.js`
+
+Saat ini URL API tersebar di beberapa file, jadi perubahan endpoint perlu disamakan manual.
+
+## Keamanan
+
+- Jangan commit file `.env`.
+- Jangan commit `auth_info/` karena berisi kredensial session WhatsApp.
+- Jangan commit `memory-store/` karena dapat berisi riwayat chat dan data customer.
+- Jangan menaruh API key asli di `.env.example`.
+- Rotasi API key jika pernah tidak sengaja tersimpan di repo atau file contoh.
+- Nomor admin, JID grup, dan URL Google Apps Script masih hardcoded di kode. Untuk production yang lebih rapi, pindahkan nilai tersebut ke environment variable.
+
+## Catatan Operasional
+
+- Bot menggunakan timezone `Asia/Jakarta`.
+- Format tanggal tool reservasi adalah `YYYY-MM-DD`.
+- Format jam tool reservasi adalah `HH:mm` atau `HH.mm`.
+- Nomor WhatsApp customer dinormalisasi menjadi format lokal `08xxx` saat create reservasi.
+- Deposit yang dikirim ke customer mengikuti data finansial dari response API.
+- Jika `loka_reservation_create` sukses tetapi response API tidak mengembalikan ID atau data finansial, post-reservation flow akan dilewati.
+- Pembatalan dan reschedule belum memiliki tool khusus di private agent. Arahkan customer ke admin jika kasus tersebut muncul.
+
+## Lisensi
+
+Proprietary. Digunakan untuk kebutuhan internal Loka Coffee & Eatery.
